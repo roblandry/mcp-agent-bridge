@@ -832,58 +832,59 @@ INDEX_HTML = """<!doctype html>
     --border: #1f2733; --warn: #f7b955; --ok: #6ce8a3; --err: #ff6b6b;
     --pill-bg: #1a2230; --input-bg: #161b24;
   }
-  body { background: var(--bg); color: var(--fg); font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
+  html { font-size: 17.5px; }   /* 1.25x of the previous 14px baseline */
+  body { background: var(--bg); color: var(--fg); font: 1rem/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
   header { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; }
-  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
-  header .auth { font-size: 12px; }
+  header h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+  header .auth { font-size: 0.86rem; }
   header .auth.on { color: var(--ok); }
   header .auth.off { color: var(--warn); }
-  header .peers { color: var(--muted); font-size: 12px; flex: 1; }
+  header .peers { color: var(--muted); font-size: 0.86rem; flex: 1; }
   header .peers .peer { display: inline-block; margin-right: 12px; }
   header .peers .peer-id { color: var(--accent); }
-  header button.logout { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 12px; }
+  header button.logout { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.86rem; }
   header button.logout:hover { color: var(--fg); }
   nav { padding: 6px 18px; border-bottom: 1px solid var(--border); display: flex; gap: 16px; }
-  nav button { background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 4px 0; font-size: 13px; }
+  nav button { background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 4px 0; font-size: 0.93rem; }
   nav button.active { color: var(--fg); border-bottom: 2px solid var(--accent); }
   main { padding: 12px 18px; max-width: 1100px; margin: 0 auto; }
   .empty { color: var(--muted); padding: 20px 0; text-align: center; }
   .row { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; padding: 10px 14px; }
-  .row .meta { color: var(--muted); font-size: 12px; display: flex; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
+  .row .meta { color: var(--muted); font-size: 0.86rem; display: flex; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
   .row .meta .from { color: var(--accent); }
-  .row pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0 0; font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; max-height: 600px; overflow: auto; }
-  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--pill-bg); font-size: 11px; }
+  .row pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0 0; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--pill-bg); font-size: 0.79rem; }
   .pill.pending { color: var(--warn); }
   .pill.applied, .pill.fulfilled { color: var(--ok); }
   .pill.rejected, .pill.denied { color: var(--err); }
   .pill.withdrawn { color: var(--muted); }
   .pill.proposal, .pill.filereq { color: var(--warn); }
-  details summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 0.86rem; user-select: none; }
   details[open] summary { color: var(--fg); }
-  .filter { float: right; color: var(--muted); font-size: 12px; }
+  .filter { float: right; color: var(--muted); font-size: 0.86rem; }
   .filter select { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
 
   /* login */
   .login-shell { max-width: 360px; margin: 80px auto; padding: 28px; border: 1px solid var(--border); border-radius: 8px; background: var(--input-bg); }
-  .login-shell h2 { margin: 0 0 6px 0; font-size: 18px; }
-  .login-shell .hint { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+  .login-shell h2 { margin: 0 0 6px 0; font-size: 1.29rem; }
+  .login-shell .hint { color: var(--muted); font-size: 0.86rem; margin-bottom: 18px; }
   .login-shell input { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; font: inherit; margin-bottom: 12px; }
   .login-shell button { width: 100%; background: var(--accent); color: #0e1116; border: 0; border-radius: 4px; padding: 8px; cursor: pointer; font: inherit; font-weight: 600; }
-  .login-shell .err { color: var(--err); font-size: 12px; min-height: 16px; margin-top: 4px; }
+  .login-shell .err { color: var(--err); font-size: 0.86rem; min-height: 16px; margin-top: 4px; }
 
   /* peers tab */
-  .peers-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .peers-table { width: 100%; border-collapse: collapse; font-size: 0.93rem; }
   .peers-table th, .peers-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-  .peers-table th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  .peers-table .tok { font: 12px ui-monospace, "SF Mono", monospace; color: var(--muted); user-select: all; }
+  .peers-table th { color: var(--muted); font-weight: 500; font-size: 0.86rem; }
+  .peers-table .tok { font: 0.86rem ui-monospace, "SF Mono", monospace; color: var(--muted); user-select: all; }
   .peers-table .actions { display: flex; gap: 8px; }
-  .peers-table button { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 11px; }
+  .peers-table button { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.79rem; }
   .peers-table button:hover { color: var(--fg); }
   .peers-table button.danger:hover { color: var(--err); border-color: var(--err); }
   .peer-form { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
   .peer-form input { background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font: inherit; }
   .peer-form input.id { width: 200px; }
-  .peer-form input.token { flex: 1; min-width: 280px; font: 12px ui-monospace, monospace; }
+  .peer-form input.token { flex: 1; min-width: 280px; font: 0.86rem ui-monospace, monospace; }
   .peer-form button { background: var(--accent); color: #0e1116; border: 0; border-radius: 4px; padding: 6px 12px; cursor: pointer; font: inherit; font-weight: 600; }
   .peer-form button.secondary { background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); font-weight: 400; }
 </style>
@@ -932,7 +933,7 @@ INDEX_HTML = """<!doctype html>
         <button class="secondary" id="gen-token">generate</button>
         <button id="add-peer">add / update</button>
       </div>
-      <div id="peer-form-err" style="color:var(--err);font-size:12px;margin-bottom:12px"></div>
+      <div id="peer-form-err" style="color:var(--err);font-size:0.86rem;margin-bottom:12px"></div>
       <table class="peers-table">
         <thead><tr><th>peer_id</th><th>token</th><th>last seen</th><th>actions</th></tr></thead>
         <tbody id="peers-tbody"></tbody>
@@ -1102,8 +1103,8 @@ function renderProposals(props) {
         ${p.resolved_at ? `<span>· resolved ${fmtTs(p.resolved_at)} by ${esc(p.resolved_by||'')}</span>` : ''}
       </div>
       <div><strong>${esc(p.summary)}</strong></div>
-      <div style="color:var(--muted);font-size:12px">${esc(p.file_path)}</div>
-      ${p.resolution_note ? `<div style="color:var(--muted);font-size:12px;margin-top:4px">note: ${esc(p.resolution_note)}</div>` : ''}
+      <div style="color:var(--muted);font-size:0.86rem">${esc(p.file_path)}</div>
+      ${p.resolution_note ? `<div style="color:var(--muted);font-size:0.86rem;margin-top:4px">note: ${esc(p.resolution_note)}</div>` : ''}
       <details><summary>show proposed content</summary><pre class="payload" data-kind="proposal" data-id="${p.id}">loading…</pre></details>
     </div>
   `).join('');
@@ -1124,9 +1125,9 @@ function renderFileRequests(freqs) {
         ${f.content_size != null ? `<span>· ${f.content_size} bytes</span>` : ''}
         ${f.resolved_at ? `<span>· resolved ${fmtTs(f.resolved_at)} by ${esc(f.resolved_by||'')}</span>` : ''}
       </div>
-      <div style="color:var(--muted);font-size:12px">${esc(f.file_path)}</div>
-      ${f.reason ? `<div style="font-size:12px;margin-top:4px">reason: ${esc(f.reason)}</div>` : ''}
-      ${f.resolution_note ? `<div style="color:var(--muted);font-size:12px;margin-top:4px">note: ${esc(f.resolution_note)}</div>` : ''}
+      <div style="color:var(--muted);font-size:0.86rem">${esc(f.file_path)}</div>
+      ${f.reason ? `<div style="font-size:0.86rem;margin-top:4px">reason: ${esc(f.reason)}</div>` : ''}
+      ${f.resolution_note ? `<div style="color:var(--muted);font-size:0.86rem;margin-top:4px">note: ${esc(f.resolution_note)}</div>` : ''}
       ${f.status === 'fulfilled' ? `<details><summary>show fulfilled content</summary><pre class="payload" data-kind="filereq" data-id="${f.id}">loading…</pre></details>` : ''}
     </div>
   `).join('');
