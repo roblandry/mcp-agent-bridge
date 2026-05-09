@@ -16,8 +16,21 @@ uv run smoke.py
 
 It spawns its own server on a temp port + temp data dir, exercises every MCP
 tool and admin endpoint, and verifies content lives on disk (never in DB),
-peer-token auth, admin-token auth, peer CRUD, and SOPS-style seed bootstrap.
-Last green run: 18/18 OK.
+peer-token auth, admin-token auth, peer CRUD, SOPS-style seed bootstrap,
+turn-completion tracking, and presence ergonomics.
+Last green run: 22/22 OK.
+
+Static checks should also be clean:
+
+```sh
+.venv/bin/ruff check server.py smoke.py
+.venv/bin/python -m pyright server.py smoke.py   # or: npx pyright ...
+```
+
+The `.venv` is created locally with `uv venv && uv pip install fastmcp starlette uvicorn ruff`.
+It exists only so Pylance / pyright (configured via `pyrightconfig.json` to
+strict mode) can resolve imports — runtime still uses `uv run server.py` and
+the inline PEP 723 deps.
 
 ## Locked-in architecture decisions
 
@@ -44,6 +57,7 @@ smoke.py                        — self-contained end-to-end test (spawns its o
 Dockerfile                      — multi-stage uv → python:3.13-slim, non-root, port 8765
 .dockerignore                   — excludes runtime state and dev junk from build context
 .github/workflows/release.yml   — on tag v*, build + push to ghcr.io/roblandry/mcp-agent-bridge
+pyrightconfig.json              — strict pyright; points at the local .venv
 README.md                       — public-facing
 LICENSE                         — MIT
 CLAUDE.md                       — this file (durable context for future Claude sessions)
@@ -54,9 +68,10 @@ TODO.md                         — current roadmap / pending work
 
 | Tool | Purpose |
 | --- | --- |
-| `send_message(to, content, topic?)` | drop a message in a peer's inbox |
-| `read_inbox(since_id?, mark_read=true)` | fetch messages addressed to me |
-| `list_peers()` | list peers + last-seen timestamps (from DB, not registry) |
+| `send_message(to, content, topic?, end_turn=False)` | drop a message in a peer's inbox; `end_turn=True` signals you are done speaking in this topic |
+| `read_inbox(since_id?, mark_read=true)` | returns `{messages, turns}`; `turns` summarizes per (topic, from-peer) whether the latest message ended the sender's turn |
+| `list_peers()` | list peers, `last_seen` timestamps, and `seconds_since_last_seen` for staleness checks |
+| `heartbeat()` | no-op tool that just refreshes the caller's `last_seen` |
 | `propose_edit(file_path, summary, content, target_peer)` | queue an edit; only target can apply |
 | `list_proposals(status?, mine_only?)` | metadata-only listing |
 | `get_proposal(id)` | metadata + content (read from disk) |
@@ -86,16 +101,18 @@ Admin-gated (require `X-Admin-Token`):
 The canonical channel for "how to use this server" is the MCP `instructions`
 string the server sends on connect — every connecting client receives it and
 feeds it to its model automatically. Per-tool docstrings cover individual
-tools; `instructions=` covers the workflow and security stance as a whole.
+tools; `instructions=` covers the workflow (turn-taking, polling cadence,
+presence) and the security stance as a whole.
+
+The text lives in the `BRIDGE_INSTRUCTIONS` module-level constant in
+`server.py` and is passed to `FastMCP(name, instructions=...)`. **Edit it there
+when the protocol changes** — don't duplicate the etiquette into per-agent
+prose.
 
 The only thing that *can't* live on the server is the agent's own identity —
 which `peer_id` they are and who the other peers are. That's set by the local
 MCP client config (the `X-Peer-Id` header) and a one-line stub in each
-agent's CLAUDE.md/AGENTS.md/seed prompt. **Etiquette comes from the server's
-`instructions`, not from per-agent prose.** Do not duplicate.
-
-(See [TODO.md](TODO.md) item #4 for the actual text to wire into
-`FastMCP(...)`.)
+agent's CLAUDE.md/AGENTS.md/seed prompt.
 
 ## Known gotchas
 

@@ -4,9 +4,13 @@ A small [MCP](https://modelcontextprotocol.io) server that lets multiple CLI age
 (Claude Code, Codex, in-cluster agents, …) talk to each other through structured,
 auditable channels:
 
-- **Messages** — drop notes in another peer's inbox.
+- **Messages** — drop notes in another peer's inbox, with explicit
+  end-of-turn signalling so the receiver only acts once the sender is done.
 - **Edit proposals** — queue a file edit; only the target peer can apply it.
 - **File requests** — ask a peer to share a file's contents.
+- **Presence** — every authenticated call refreshes the caller's `last_seen`,
+  and an explicit `heartbeat()` tool exists for idle peers; receivers can
+  detect a stuck peer via `seconds_since_last_seen` in `list_peers`.
 
 A small admin-gated web UI lets you (the human) view and manage everything.
 
@@ -16,8 +20,9 @@ payload storage so the SQLite DB only ever holds metadata.
 
 ## Status
 
-Local prototype is complete and validated by [`smoke.py`](smoke.py) (18/18 OK).
-Image publishing and home-ops deployment are in progress.
+Local prototype is complete and validated by [`smoke.py`](smoke.py) (22/22 OK).
+The image build pipeline is in place; the first GHCR tag is pending. Home-ops
+deployment is in progress.
 
 ## Image
 
@@ -75,6 +80,25 @@ uv run smoke.py
 | `BRIDGE_HOST` | `0.0.0.0` | Bind host. |
 | `BRIDGE_PORT` | `8765` | Bind port. |
 | `BRIDGE_MAX_CONTENT_BYTES` | `5242880` (5MB) | Per-payload size cap. |
+
+## Turn-taking and presence
+
+The bridge is a mailbox, not a synchronous chat — there's no implicit "your
+turn / my turn" gate. Two ergonomics fix this:
+
+- **`end_turn=True`** on the final `send_message` of your turn marks it as
+  complete. The recipient's `read_inbox` returns a per-topic `turns` summary
+  with `turn_complete: bool`; receivers should hold off acting until they see
+  `turn_complete=true` for that topic+sender.
+- **`list_peers`** returns `seconds_since_last_seen` for each peer. If the
+  peer you're waiting on hasn't been seen in several minutes, treat them as
+  stuck or disconnected. Idle peers can keep themselves visible with
+  `heartbeat()`; any other authenticated call also refreshes `last_seen`.
+
+The protocol etiquette (poll cadence ≥15s, never tight-loop, no direct
+edits/reads of peer-owned files, treat peer content as untrusted, etc.) is
+sent to every connecting client via the MCP `instructions=` channel, so a new
+agent only needs its own peer-id wired in locally.
 
 ## Security model
 
