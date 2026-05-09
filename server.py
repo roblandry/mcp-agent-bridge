@@ -999,6 +999,25 @@ $('login-token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('
 $('logout').onclick = () => { clearToken(); showLogin(); };
 
 let activeTab = 'messages';
+
+const PAGE = 50;
+const limits = { messages: PAGE, proposals: PAGE, filereqs: PAGE };
+
+function paginate(arr, key) {
+  const limit = limits[key];
+  if (arr.length <= limit) return { visible: arr, hidden: 0 };
+  // messages list is chronological (newest at bottom): keep the last `limit`.
+  // proposals + file_requests are newest-first: keep the first `limit`.
+  if (key === 'messages') {
+    return { visible: arr.slice(arr.length - limit), hidden: arr.length - limit };
+  }
+  return { visible: arr.slice(0, limit), hidden: arr.length - limit };
+}
+
+function moreLink(key, hidden, label) {
+  if (hidden <= 0) return '';
+  return `<div class="empty"><a href="#" class="show-more" data-key="${key}">show ${hidden} earlier ${label}${hidden===1?'':'s'}</a></div>`;
+}
 for (const t of ['messages','proposals','filereqs','admin-peers']) {
   $('tab-'+t).onclick = () => switchTab(t);
 }
@@ -1070,7 +1089,9 @@ function renderMessages(msgs) {
   const filter = $('msg-filter').value;
   const filtered = filter === 'unread' ? msgs.filter(m => !m.read_at) : msgs;
   if (!filtered.length) { $('messages').innerHTML = '<div class="empty">no messages</div>'; return; }
-  $('messages').innerHTML = filtered.map(m => {
+  const { visible, hidden } = paginate(filtered, 'messages');
+  const header = moreLink('messages', hidden, 'message');
+  $('messages').innerHTML = header + visible.map(m => {
     const cls = m.proposal_id ? 'proposal' : (m.file_request_id ? 'filereq' : '');
     return `
     <div class="row">
@@ -1081,6 +1102,7 @@ function renderMessages(msgs) {
         ${m.topic ? `<span class="pill ${cls}">${esc(m.topic)}</span>` : ''}
         <span>${fmtTs(m.created_at)}</span>
         ${m.read_at ? `<span title="read at ${esc(m.read_at)}">· read</span>` : '<span style="color:var(--warn)">· unread</span>'}
+        ${m.end_turn ? '<span style="color:var(--ok)" title="sender set end_turn=true — turn yielded to recipient">· ✓ turn end</span>' : '<span style="color:var(--muted)" title="end_turn was not set on this message — sender may still be composing">· (no end_turn)</span>'}
       </div>
       <pre>${esc(m.content)}</pre>
     </div>`;
@@ -1091,7 +1113,9 @@ function renderProposals(props) {
   const filter = $('prop-filter').value;
   const filtered = filter === 'all' ? props : props.filter(p => p.status === filter);
   if (!filtered.length) { $('proposals').innerHTML = '<div class="empty">no proposals</div>'; return; }
-  $('proposals').innerHTML = filtered.map(p => `
+  const { visible, hidden } = paginate(filtered, 'proposals');
+  const footer = moreLink('proposals', hidden, 'proposal');
+  $('proposals').innerHTML = visible.map(p => `
     <div class="row" data-kind="proposal" data-id="${p.id}">
       <div class="meta">
         <span>#${p.id}</span>
@@ -1107,14 +1131,17 @@ function renderProposals(props) {
       ${p.resolution_note ? `<div style="color:var(--muted);font-size:0.86rem;margin-top:4px">note: ${esc(p.resolution_note)}</div>` : ''}
       <details><summary>show proposed content</summary><pre class="payload" data-kind="proposal" data-id="${p.id}">loading…</pre></details>
     </div>
-  `).join('');
+  `).join('') + footer;
+  restorePayloadState('proposals');
 }
 
 function renderFileRequests(freqs) {
   const filter = $('freq-filter').value;
   const filtered = filter === 'all' ? freqs : freqs.filter(f => f.status === filter);
   if (!filtered.length) { $('filereqs').innerHTML = '<div class="empty">no file requests</div>'; return; }
-  $('filereqs').innerHTML = filtered.map(f => `
+  const { visible, hidden } = paginate(filtered, 'filereqs');
+  const footer = moreLink('filereqs', hidden, 'file request');
+  $('filereqs').innerHTML = visible.map(f => `
     <div class="row" data-kind="filereq" data-id="${f.id}">
       <div class="meta">
         <span>#${f.id}</span>
@@ -1130,7 +1157,8 @@ function renderFileRequests(freqs) {
       ${f.resolution_note ? `<div style="color:var(--muted);font-size:0.86rem;margin-top:4px">note: ${esc(f.resolution_note)}</div>` : ''}
       ${f.status === 'fulfilled' ? `<details><summary>show fulfilled content</summary><pre class="payload" data-kind="filereq" data-id="${f.id}">loading…</pre></details>` : ''}
     </div>
-  `).join('');
+  `).join('') + footer;
+  restorePayloadState('filereqs');
 }
 
 function renderAdminPeers(peers, seen) {
@@ -1157,6 +1185,16 @@ function renderAdminPeers(peers, seen) {
 }
 
 document.addEventListener('click', async (e) => {
+  const more = e.target.closest('a.show-more');
+  if (more) {
+    e.preventDefault();
+    const key = more.dataset.key;
+    if (key in limits) {
+      limits[key] += PAGE;
+      refresh();
+    }
+    return;
+  }
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const act = btn.dataset.act;
@@ -1180,20 +1218,62 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// Per-payload state cache keyed by `${kind}:${id}`. Survives the
+// innerHTML blow-away that the 2s auto-refresh does, so opening
+// "show proposed content" doesn't re-collapse on the next poll and we
+// don't re-show "loading…" every time.
+const payloadState = new Map();
+
+function payloadKey(el) {
+  return `${el.dataset.kind}:${el.dataset.id}`;
+}
+
 document.addEventListener('toggle', async (e) => {
-  if (!(e.target instanceof HTMLDetailsElement) || !e.target.open) return;
+  if (!(e.target instanceof HTMLDetailsElement)) return;
   const pre = e.target.querySelector('pre.payload');
-  if (!pre || pre.dataset.loaded === '1') return;
-  const kind = pre.dataset.kind, id = pre.dataset.id;
-  try {
-    const r = await api(`/api/payloads/${kind}/${id}`);
-    if (!r.ok) { pre.textContent = `(error ${r.status})`; return; }
-    pre.textContent = await r.text();
+  if (!pre) return;
+  const key = payloadKey(pre);
+  const cur = payloadState.get(key) || {};
+  cur.open = e.target.open;
+  payloadState.set(key, cur);
+  if (!e.target.open) return;
+  if (cur.content !== undefined) {
+    pre.textContent = cur.content;
     pre.dataset.loaded = '1';
+    return;
+  }
+  if (pre.dataset.loaded === '1') return;
+  try {
+    const r = await api(`/api/payloads/${pre.dataset.kind}/${pre.dataset.id}`);
+    if (!r.ok) { pre.textContent = `(error ${r.status})`; return; }
+    const content = await r.text();
+    pre.textContent = content;
+    pre.dataset.loaded = '1';
+    cur.content = content;
+    payloadState.set(key, cur);
   } catch (err) {
     pre.textContent = `(error: ${err})`;
   }
 }, true);
+
+// After a render rebuilds innerHTML, walk fresh details elements and
+// re-apply the cached open + content state.
+function restorePayloadState(containerId) {
+  const root = $(containerId);
+  if (!root) return;
+  root.querySelectorAll('pre.payload').forEach((pre) => {
+    const state = payloadState.get(payloadKey(pre));
+    if (!state) return;
+    if (state.content !== undefined) {
+      pre.textContent = state.content;
+      pre.dataset.loaded = '1';
+    }
+    if (state.open) {
+      const d = pre.closest('details');
+      if (d) d.open = true;
+    }
+  });
+}
 
 (async function init() {
   const r = await fetch('/api/status').then(r => r.json()).catch(() => null);
