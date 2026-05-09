@@ -71,24 +71,24 @@ MAX_CONTENT_BYTES = int(os.environ.get("BRIDGE_MAX_CONTENT_BYTES", str(5 * 1024 
 # build time via the BRIDGE_VERSION ARG in the Dockerfile (the workflow sets
 # it from the v* tag). Defaults to "dev" for `uv run server.py` locally.
 BRIDGE_VERSION = (os.environ.get("BRIDGE_VERSION") or "dev").strip()
-# Any built-in Pygments style name (e.g. monokai, dracula, nord, gruvbox-dark,
-# one-dark, github-dark, solarized-dark). Validated below; falls back to
-# "dracula" if the requested style is unknown.
+# Any built-in Pygments style name (e.g. fruity, monokai, dracula, nord,
+# gruvbox-dark, one-dark, github-dark, solarized-dark). Validated below;
+# falls back to "fruity" if the requested style is unknown.
 def _resolve_style(requested: str) -> str:
     try:
         HtmlFormatter(style=requested)
     except ClassNotFound:
         print(
             f"agent-bridge: WARN unknown BRIDGE_HIGHLIGHT_STYLE={requested!r}, "
-            f"falling back to 'dracula'",
+            f"falling back to 'fruity'",
             file=sys.stderr,
         )
-        return "dracula"
+        return "fruity"
     return requested
 
 
 HIGHLIGHT_STYLE: Final[str] = _resolve_style(
-    (os.environ.get("BRIDGE_HIGHLIGHT_STYLE") or "dracula").strip()
+    (os.environ.get("BRIDGE_HIGHLIGHT_STYLE") or "fruity").strip()
 )
 
 ADMIN_TOKEN = (os.environ.get("BRIDGE_ADMIN_TOKEN") or "").strip() or None
