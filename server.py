@@ -1289,7 +1289,7 @@ function renderProposals(props) {
       <div><strong>${esc(p.summary)}</strong></div>
       <div style="color:var(--muted);font-size:0.86rem">${esc(p.file_path)}</div>
       ${p.resolution_note ? `<div style="color:var(--muted);font-size:0.86rem;margin-top:4px">note: ${esc(p.resolution_note)}</div>` : ''}
-      <details><summary>show proposed content</summary><pre class="payload" data-kind="proposal" data-id="${p.id}">loading…</pre></details>
+      <details><summary>show proposed content</summary><div class="payload" data-kind="proposal" data-id="${p.id}">loading…</div></details>
     </div>
   `).join('') + footer;
   restorePayloadState('proposals');
@@ -1315,7 +1315,7 @@ function renderFileRequests(freqs) {
       <div style="color:var(--muted);font-size:0.86rem">${esc(f.file_path)}</div>
       ${f.reason ? `<div style="font-size:0.86rem;margin-top:4px">reason: ${esc(f.reason)}</div>` : ''}
       ${f.resolution_note ? `<div style="color:var(--muted);font-size:0.86rem;margin-top:4px">note: ${esc(f.resolution_note)}</div>` : ''}
-      ${f.status === 'fulfilled' ? `<details><summary>show fulfilled content</summary><pre class="payload" data-kind="filereq" data-id="${f.id}">loading…</pre></details>` : ''}
+      ${f.status === 'fulfilled' ? `<details><summary>show fulfilled content</summary><div class="payload" data-kind="filereq" data-id="${f.id}">loading…</div></details>` : ''}
     </div>
   `).join('') + footer;
   restorePayloadState('filereqs');
@@ -1412,7 +1412,7 @@ document.addEventListener('toggle', async (e) => {
     if (key) codeblockState.set(key, e.target.open);
     return;
   }
-  const pre = e.target.querySelector('pre.payload');
+  const pre = e.target.querySelector('.payload');
   if (!pre) return;
   const key = payloadKey(pre);
   const cur = payloadState.get(key) || {};
@@ -1445,7 +1445,7 @@ document.addEventListener('toggle', async (e) => {
 function restorePayloadState(containerId) {
   const root = $(containerId);
   if (!root) return;
-  root.querySelectorAll('pre.payload').forEach((pre) => {
+  root.querySelectorAll('.payload').forEach((pre) => {
     const state = payloadState.get(payloadKey(pre));
     if (!state) return;
     if (state.content !== undefined) {
@@ -1558,7 +1558,8 @@ async def api_payload(request: Request) -> Response:
     if body is None:
         return PlainTextResponse("not found", status_code=404)
     # `?raw=1` returns the unrendered body (useful for downloads / debugging);
-    # default response is a Pygments-highlighted HTML fragment for the UI.
+    # default response is a rendered HTML fragment for the UI: markdown for
+    # .md files, Pygments-highlighted code for everything else.
     if request.query_params.get("raw") == "1":
         return PlainTextResponse(body)
     file_path: Optional[str] = None
@@ -1567,6 +1568,8 @@ async def api_payload(request: Request) -> Response:
         row = c.execute(f"SELECT file_path FROM {table} WHERE id = ?", (id_,)).fetchone()
         if row is not None:
             file_path = row["file_path"]
+    if file_path and Path(file_path).suffix.lower() in {".md", ".markdown", ".mdown", ".mkd"}:
+        return HTMLResponse(f'<div class="md">{render_markdown(body)}</div>')
     spans = highlight_code(body, file_path=file_path)
     return HTMLResponse(f'<pre class="hl">{spans}</pre>')
 
