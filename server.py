@@ -71,6 +71,25 @@ MAX_CONTENT_BYTES = int(os.environ.get("BRIDGE_MAX_CONTENT_BYTES", str(5 * 1024 
 # build time via the BRIDGE_VERSION ARG in the Dockerfile (the workflow sets
 # it from the v* tag). Defaults to "dev" for `uv run server.py` locally.
 BRIDGE_VERSION = (os.environ.get("BRIDGE_VERSION") or "dev").strip()
+# Any built-in Pygments style name (e.g. monokai, dracula, nord, gruvbox-dark,
+# one-dark, github-dark, solarized-dark). Validated below; falls back to
+# "dracula" if the requested style is unknown.
+def _resolve_style(requested: str) -> str:
+    try:
+        HtmlFormatter(style=requested)
+    except ClassNotFound:
+        print(
+            f"agent-bridge: WARN unknown BRIDGE_HIGHLIGHT_STYLE={requested!r}, "
+            f"falling back to 'dracula'",
+            file=sys.stderr,
+        )
+        return "dracula"
+    return requested
+
+
+HIGHLIGHT_STYLE: Final[str] = _resolve_style(
+    (os.environ.get("BRIDGE_HIGHLIGHT_STYLE") or "dracula").strip()
+)
 
 ADMIN_TOKEN = (os.environ.get("BRIDGE_ADMIN_TOKEN") or "").strip() or None
 ADMIN_AUTH_REQUIRED = ADMIN_TOKEN is not None
@@ -850,8 +869,8 @@ def resolve_file_request(
 # ---------- web UI + admin API ----------
 
 
-_HL_FORMATTER: HtmlFormatter[Any] = HtmlFormatter(nowrap=True, style="monokai")
-HIGHLIGHTER_CSS: str = cast(str, HtmlFormatter(style="monokai").get_style_defs(".hl"))  # pyright: ignore[reportUnknownMemberType]
+_HL_FORMATTER: HtmlFormatter[Any] = HtmlFormatter(nowrap=True, style=HIGHLIGHT_STYLE)
+HIGHLIGHTER_CSS: str = cast(str, HtmlFormatter(style=HIGHLIGHT_STYLE).get_style_defs(".hl"))  # pyright: ignore[reportUnknownMemberType]
 
 
 def _pick_lexer(content: str, info: Optional[str] = None, file_path: Optional[str] = None) -> Lexer:
@@ -923,7 +942,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   :root {
     --bg: #0e1116; --fg: #d6deeb; --muted: #6b7785; --accent: #82aaff;
     --border: #1f2733; --warn: #f7b955; --ok: #6ce8a3; --err: #ff6b6b;
-    --pill-bg: #1a2230; --input-bg: #161b24;
+    --pill-bg: #1a2230; --input-bg: #161b24; --code-bg: #06080c;
   }
   html { font-size: 17.5px; }   /* 1.25x of the previous 14px baseline */
   body { background: var(--bg); color: var(--fg); font: 1rem/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
@@ -949,8 +968,8 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .row .meta .from { color: var(--accent); }
   .row pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0 0; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
 
-  /* Pygments syntax highlighting (style: monokai) */
-  pre.hl { background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; margin: 6px 0; }
+  /* Pygments syntax highlighting (style configured via BRIDGE_HIGHLIGHT_STYLE) */
+  pre.hl { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; margin: 6px 0; }
   /*PYGMENTS_CSS*/
 
   /* rendered markdown inside a .row */
@@ -963,8 +982,8 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .md h2 { font-size: 1.15rem; }
   .md h3 { font-size: 1rem; font-weight: 600; }
   .md h4 { font-size: 0.93rem; font-weight: 600; color: var(--muted); }
-  .md code { font: 0.86rem ui-monospace, "SF Mono", Menlo, monospace; padding: 1px 5px; background: var(--input-bg); border-radius: 3px; }
-  .md pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0; padding: 8px 12px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  .md code { font: 0.86rem ui-monospace, "SF Mono", Menlo, monospace; padding: 1px 5px; background: var(--code-bg); border-radius: 3px; }
+  .md pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0; padding: 8px 12px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
   .md pre code { background: transparent; padding: 0; font-size: inherit; }
   .md ul, .md ol { margin: 0.5em 0; padding-left: 1.5em; }
   .md li { margin: 0.2em 0; }
