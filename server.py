@@ -32,6 +32,7 @@ Storage layout (configurable via BRIDGE_DATA_DIR; default = script's directory):
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import html
 import json
@@ -42,7 +43,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final, Optional, cast
+from typing import Any, AsyncGenerator, Final, Optional, cast
 
 import mistune
 from fastmcp import FastMCP
@@ -58,7 +59,7 @@ from pygments.lexers import (
 from pygments.lexers.special import TextLexer  # pyright: ignore[reportMissingTypeStubs]
 from pygments.util import ClassNotFound
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 DATA_DIR = Path(os.environ.get("BRIDGE_DATA_DIR", str(Path(__file__).parent)))
 PAYLOAD_DIR = DATA_DIR / "payloads"
@@ -345,6 +346,29 @@ def require_admin(request: Request) -> Optional[JSONResponse]:
     return None
 
 
+# ---------- SSE broadcaster ----------
+#
+# Each browser tab open on the web UI subscribes to /api/events and gets a
+# StreamingResponse held open. Mutating tool calls and admin operations
+# call broadcast_event() to push a small JSON line to every subscriber
+# queue; the client uses each event as a debounced "refresh now" trigger.
+# Single-process, single-replica deployment, so a plain in-memory set of
+# asyncio.Queues is fine.
+_event_subscribers: Final[set["asyncio.Queue[str]"]] = set()
+
+
+def broadcast_event(event_type: str, data: Optional[dict[str, Any]] = None) -> None:
+    """Push an SSE event to all connected admin clients. Best-effort:
+    drops the event for any subscriber whose queue is full."""
+    payload = json.dumps({"type": event_type, "data": data or {}})
+    line = f"event: {event_type}\ndata: {payload}\n\n"
+    for q in list(_event_subscribers):
+        try:
+            q.put_nowait(line)
+        except asyncio.QueueFull:
+            pass
+
+
 # ---------- MCP tools ----------
 
 BRIDGE_INSTRUCTIONS = """\
@@ -447,14 +471,16 @@ def send_message(
             "VALUES(?, ?, ?, ?, ?, ?)",
             (sender, to, topic, content, created_at, 1 if end_turn else 0),
         )
-        return {
-            "id": _new_id(cur),
-            "from": sender,
-            "to": to,
-            "topic": topic,
-            "created_at": created_at,
-            "end_turn": bool(end_turn),
-        }
+        new_id = _new_id(cur)
+    broadcast_event("message_added", {"id": new_id, "from": sender, "to": to})
+    return {
+        "id": new_id,
+        "from": sender,
+        "to": to,
+        "topic": topic,
+        "created_at": created_at,
+        "end_turn": bool(end_turn),
+    }
 
 
 @mcp.tool
@@ -501,13 +527,16 @@ def read_inbox(since_id: Optional[int] = None, mark_read: bool = True) -> dict[s
             m: dict[str, Any] = dict(r)
             m["end_turn"] = bool(m.get("end_turn", 0))
             messages.append(m)
+        marked_ids: list[Any] = []
         if mark_read and messages:
-            ids: list[Any] = [m["id"] for m in messages]
-            placeholders = ",".join("?" * len(ids))
+            marked_ids = [m["id"] for m in messages]
+            placeholders = ",".join("?" * len(marked_ids))
             c.execute(
                 f"UPDATE messages SET read_at = ? WHERE id IN ({placeholders})",
-                [now_iso(), *ids],
+                [now_iso(), *marked_ids],
             )
+    if marked_ids:
+        broadcast_event("messages_read", {"ids": marked_ids})
     latest: dict[tuple[Optional[str], str], dict[str, Any]] = {}
     for m in messages:
         key: tuple[Optional[str], str] = (m["topic"], m["from_peer"])
@@ -603,6 +632,7 @@ def propose_edit(
             "VALUES(?, ?, ?, ?, ?, ?)",
             (sender, target_peer, f"proposal:{proposal_id}", notify, created_at, proposal_id),
         )
+    broadcast_event("proposal_added", {"id": proposal_id, "from": sender, "target": target_peer})
     return {
         "id": proposal_id,
         "from": sender,
@@ -703,6 +733,7 @@ def resolve_proposal(
             "VALUES(?, ?, ?, ?, ?, ?)",
             (me, notify_to, f"proposal:{proposal_id}", notify, resolved_at, proposal_id),
         )
+    broadcast_event("proposal_updated", {"id": proposal_id, "status": status})
     return {
         "id": proposal_id,
         "status": status,
@@ -748,6 +779,7 @@ def request_file(
             "VALUES(?, ?, ?, ?, ?, ?)",
             (sender, target_peer, f"file_req:{request_id}", notify, created_at, request_id),
         )
+    broadcast_event("file_request_added", {"id": request_id, "from": sender, "target": target_peer})
     return {
         "id": request_id,
         "from": sender,
@@ -856,6 +888,7 @@ def resolve_file_request(
             "VALUES(?, ?, ?, ?, ?, ?)",
             (me, notify_to, f"file_req:{request_id}", notify, resolved_at, request_id),
         )
+    broadcast_event("file_request_updated", {"id": request_id, "status": status})
     return {
         "id": request_id,
         "status": status,
@@ -1131,6 +1164,7 @@ function showLogin() {
 function showApp() {
   $('login-view').hidden = true;
   $('app-view').hidden = false;
+  startEvents();
   refresh();
 }
 
@@ -1228,7 +1262,8 @@ function hasActiveSelection() {
 
 async function refresh() {
   if ($('app-view').hidden) return;
-  if (hasActiveSelection()) return;
+  // The selection-aware deferral lives in scheduleRefresh(); direct callers
+  // (login submit, button handlers) intentionally bypass it.
   const [status, peers, msgs, props, freqs, adminPeers] = await Promise.all([
     api('/api/status').then(r=>r.json()).catch(()=>({})),
     api('/api/peers').then(r=>r.json()).catch(()=>[]),
@@ -1486,7 +1521,54 @@ function restorePayloadState(containerId) {
   else { showApp(); }
 })();
 
-setInterval(() => { if (!$('app-view').hidden) refresh(); }, 2000);
+// Live updates via Server-Sent Events. The server pushes a small event
+// (event: message_added / proposal_added / etc.) on every mutation; the
+// client uses each event as a debounced trigger for refresh(). If the user
+// has a non-empty text selection at trigger time we defer the refresh
+// until the next 'selectionchange' that collapses it, so highlighting +
+// copying never gets wiped out from under them.
+let _evtSource = null;
+let _refreshScheduled = false;
+let _refreshDeferred = false;
+
+function scheduleRefresh() {
+  if (_refreshScheduled) return;
+  _refreshScheduled = true;
+  setTimeout(async () => {
+    _refreshScheduled = false;
+    if (hasActiveSelection()) { _refreshDeferred = true; return; }
+    _refreshDeferred = false;
+    await refresh();
+  }, 200);
+}
+
+document.addEventListener('selectionchange', () => {
+  if (_refreshDeferred && !hasActiveSelection()) {
+    _refreshDeferred = false;
+    scheduleRefresh();
+  }
+});
+
+function startEvents() {
+  if (_evtSource) return;
+  const url = '/api/events' + (getToken() ? '?token=' + encodeURIComponent(getToken()) : '');
+  _evtSource = new EventSource(url);
+  _evtSource.addEventListener('open', () => { scheduleRefresh(); });
+  // catch-all: any data event triggers a refresh; specific event-types
+  // (message_added, proposal_updated, …) all flow through this.
+  _evtSource.onmessage = scheduleRefresh;
+  ['ready','message_added','messages_read','proposal_added','proposal_updated',
+   'file_request_added','file_request_updated','peers_changed'].forEach(t => {
+    _evtSource.addEventListener(t, scheduleRefresh);
+  });
+  _evtSource.onerror = () => {
+    // EventSource auto-reconnects; on the next 'open' we'll catch up via
+    // scheduleRefresh. Nothing to do here beyond logging.
+  };
+}
+
+// SSE drives updates now; the old 2s setInterval is gone. showApp() calls
+// startEvents() to (re)open the stream after the user logs in.
 </script>
 </body>
 </html>
@@ -1509,6 +1591,45 @@ async def api_status(request: Request) -> JSONResponse:
             "max_content_bytes": MAX_CONTENT_BYTES,
             "version": BRIDGE_VERSION,
         }
+    )
+
+
+@mcp.custom_route("/api/events", methods=["GET"])
+async def api_events(request: Request) -> Response:
+    """Server-Sent Events stream of mutation notifications.
+
+    EventSource doesn't support custom headers, so the admin token must come
+    in via `?token=` (require_admin already accepts that). The stream sends
+    a `: ping` comment every 30s as a keep-alive, and emits `event: <type>`
+    lines for every broadcast_event() call elsewhere in the server.
+    """
+    if (err := require_admin(request)):
+        return err
+
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1000)
+    _event_subscribers.add(queue)
+
+    async def stream() -> AsyncGenerator[str, None]:
+        try:
+            yield "event: ready\ndata: {}\n\n"
+            while True:
+                try:
+                    line = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield line
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        finally:
+            _event_subscribers.discard(queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Tell nginx (and any other proxy) not to buffer the stream.
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -1624,6 +1745,7 @@ async def api_admin_upsert_peer(request: Request) -> Response:
     peers[peer_id] = token
     _save_peers_atomic(peers)
     reload_peer_cache()
+    broadcast_event("peers_changed", {"id": peer_id, "op": "upsert"})
     return JSONResponse({"id": peer_id, "token": token})
 
 
@@ -1638,6 +1760,7 @@ async def api_admin_delete_peer(request: Request) -> Response:
     del peers[peer_id]
     _save_peers_atomic(peers)
     reload_peer_cache()
+    broadcast_event("peers_changed", {"id": peer_id, "op": "delete"})
     return JSONResponse({"ok": True})
 
 
