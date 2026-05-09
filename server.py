@@ -2,6 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #   "fastmcp>=2.10",
+#   "mistune>=3",
 #   "starlette>=0.40",
 #   "uvicorn>=0.30",
 # ]
@@ -31,6 +32,7 @@ Storage layout (configurable via BRIDGE_DATA_DIR; default = script's directory):
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import os
 import secrets
@@ -41,6 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Optional, cast
 
+import mistune
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 from starlette.requests import Request
@@ -821,11 +824,45 @@ def resolve_file_request(
 
 # ---------- web UI + admin API ----------
 
+
+class _BridgeMarkdownRenderer(mistune.HTMLRenderer):
+    """HTML renderer that wraps long fenced code blocks in <details> so they
+    collapse by default in the messages UI. Everything else is standard
+    mistune HTML output (with HTML-in-markdown escaped, since peer content
+    is untrusted)."""
+
+    LINE_THRESHOLD = 8
+
+    def block_code(self, code: str, info: Optional[str] = None) -> str:
+        body = super().block_code(code, info)
+        line_count = code.count("\n") + (0 if code.endswith("\n") else 1)
+        if line_count <= self.LINE_THRESHOLD:
+            return body
+        lang = (info or "").strip().split()[0] if info else ""
+        suffix = f", {lang}" if lang else ""
+        label = html.escape(f"code ({line_count} lines{suffix})")
+        return f'<details class="codeblock"><summary>{label}</summary>{body}</details>\n'
+
+
+_render_md = mistune.create_markdown(
+    renderer=_BridgeMarkdownRenderer(escape=True),
+    plugins=["strikethrough", "table", "url"],
+)
+
+
+def render_markdown(text: str) -> str:
+    """Render peer-supplied markdown to safe HTML for the admin web UI."""
+    out = _render_md(text)
+    # mistune.create_markdown returns str when given str
+    return out if isinstance(out, str) else ""
+
+
 INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>agent-bridge</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><line x1='14' y1='32' x2='50' y2='32' stroke='%2382aaff' stroke-width='6' stroke-linecap='round'/><circle cx='14' cy='32' r='9' fill='%2382aaff'/><circle cx='50' cy='32' r='9' fill='%2382aaff'/></svg>">
 <style>
   :root {
     --bg: #0e1116; --fg: #d6deeb; --muted: #6b7785; --accent: #82aaff;
@@ -853,6 +890,33 @@ INDEX_HTML = """<!doctype html>
   .row .meta { color: var(--muted); font-size: 0.86rem; display: flex; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
   .row .meta .from { color: var(--accent); }
   .row pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0 0; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+
+  /* rendered markdown inside a .row */
+  .md { line-height: 1.5; }
+  .md > *:first-child { margin-top: 4px; }
+  .md > *:last-child { margin-bottom: 0; }
+  .md p { margin: 0.5em 0; }
+  .md h1, .md h2, .md h3, .md h4 { margin: 0.8em 0 0.3em; line-height: 1.25; }
+  .md h1 { font-size: 1.3rem; }
+  .md h2 { font-size: 1.15rem; }
+  .md h3 { font-size: 1rem; font-weight: 600; }
+  .md h4 { font-size: 0.93rem; font-weight: 600; color: var(--muted); }
+  .md code { font: 0.86rem ui-monospace, "SF Mono", Menlo, monospace; padding: 1px 5px; background: var(--input-bg); border-radius: 3px; }
+  .md pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0; padding: 8px 12px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  .md pre code { background: transparent; padding: 0; font-size: inherit; }
+  .md ul, .md ol { margin: 0.5em 0; padding-left: 1.5em; }
+  .md li { margin: 0.2em 0; }
+  .md a { color: var(--accent); text-decoration: none; }
+  .md a:hover { text-decoration: underline; }
+  .md blockquote { margin: 0.5em 0; padding: 0 12px; border-left: 3px solid var(--border); color: var(--muted); }
+  .md table { border-collapse: collapse; margin: 0.5em 0; }
+  .md th, .md td { padding: 4px 10px; border: 1px solid var(--border); }
+  .md th { background: var(--input-bg); }
+  .md hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
+  .md details.codeblock { margin: 6px 0; }
+  .md details.codeblock > summary { color: var(--muted); font-size: 0.86rem; padding: 4px 0; }
+  .md details.codeblock[open] > summary { color: var(--fg); }
+  .md details.codeblock > pre { margin-top: 0; }
   .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--pill-bg); font-size: 0.79rem; }
   .pill.pending { color: var(--warn); }
   .pill.applied, .pill.fulfilled { color: var(--ok); }
@@ -1104,7 +1168,7 @@ function renderMessages(msgs) {
         ${m.read_at ? `<span title="read at ${esc(m.read_at)}">· read</span>` : '<span style="color:var(--warn)">· unread</span>'}
         ${m.end_turn ? '<span style="color:var(--ok)" title="sender set end_turn=true — turn yielded to recipient">· ✓ turn end</span>' : '<span style="color:var(--muted)" title="end_turn was not set on this message — sender may still be composing">· (no end_turn)</span>'}
       </div>
-      <pre>${esc(m.content)}</pre>
+      <div class="md">${m.content_html || `<pre>${esc(m.content)}</pre>`}</div>
     </div>`;
   }).join('');
 }
@@ -1322,7 +1386,12 @@ async def api_messages(request: Request) -> Response:
         else:
             rows = c.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 200").fetchall()
             rows = list(reversed(rows))
-    return JSONResponse([dict(r) for r in rows])
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d: dict[str, Any] = dict(r)
+        d["content_html"] = render_markdown(d.get("content") or "")
+        out.append(d)
+    return JSONResponse(out)
 
 
 @mcp.custom_route("/api/proposals", methods=["GET"])
