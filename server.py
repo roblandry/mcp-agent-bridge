@@ -1211,8 +1211,24 @@ $('add-peer').onclick = async () => {
   refresh();
 };
 
+function hasActiveSelection() {
+  // True when the user has a non-empty text selection inside the app
+  // (i.e. they're probably trying to copy something). The refresh's
+  // innerHTML rewrite would wipe it, which is annoying.
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+  const root = $('app-view');
+  if (!root) return false;
+  for (let i = 0; i < sel.rangeCount; i++) {
+    const r = sel.getRangeAt(i);
+    if (root.contains(r.commonAncestorContainer)) return true;
+  }
+  return false;
+}
+
 async function refresh() {
   if ($('app-view').hidden) return;
+  if (hasActiveSelection()) return;
   const [status, peers, msgs, props, freqs, adminPeers] = await Promise.all([
     api('/api/status').then(r=>r.json()).catch(()=>({})),
     api('/api/peers').then(r=>r.json()).catch(()=>[]),
