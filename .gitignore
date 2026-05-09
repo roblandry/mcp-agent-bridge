@@ -1,0 +1,21 @@
+# Runtime state — never commit
+bridge.db
+*.db
+peers.json
+payloads/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
