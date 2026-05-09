@@ -196,8 +196,45 @@ async def main() -> int:
             )
             show("send_message", sent)
             inbox = await clawd.call_tool("read_inbox", {})
-            assert inbox.data and inbox.data[0]["content"] == "hello from claude"
-            print("OK: send/read messaging\n")
+            assert isinstance(inbox.data, dict) and "messages" in inbox.data and "turns" in inbox.data
+            msgs = inbox.data["messages"]
+            assert msgs and msgs[0]["content"] == "hello from claude"
+            assert msgs[0]["end_turn"] is False, "default end_turn should be False"
+            turns = inbox.data["turns"]
+            assert len(turns) == 1 and turns[0]["topic"] == "smoke"
+            assert turns[0]["from"] == "claude-laptop"
+            assert turns[0]["turn_complete"] is False, \
+                "no end_turn=True yet, so turn_complete should be False"
+            print("OK: send/read messaging + default end_turn=False\n")
+
+            # Multi-message turn: claude sends a second message ending the turn,
+            # openclaw should now see turn_complete=True for this topic.
+            await claude.call_tool(
+                "send_message",
+                {"to": "openclaw", "content": "ok done", "topic": "smoke", "end_turn": True},
+            )
+            inbox2 = await clawd.call_tool("read_inbox", {})
+            msgs2 = inbox2.data["messages"]
+            assert len(msgs2) == 1 and msgs2[0]["end_turn"] is True
+            turns2 = inbox2.data["turns"]
+            assert turns2[0]["topic"] == "smoke" and turns2[0]["turn_complete"] is True
+            print("OK: end_turn=True flips turn_complete in turns summary\n")
+
+            # Two parallel topics, one closed, one still open: each topic's
+            # turn-completion is tracked independently.
+            await claude.call_tool(
+                "send_message",
+                {"to": "openclaw", "content": "schema work", "topic": "schema", "end_turn": True},
+            )
+            await claude.call_tool(
+                "send_message",
+                {"to": "openclaw", "content": "auth thinking...", "topic": "auth"},
+            )
+            inbox3 = await clawd.call_tool("read_inbox", {})
+            tmap = {(t["topic"], t["from"]): t["turn_complete"] for t in inbox3.data["turns"]}
+            assert tmap[("schema", "claude-laptop")] is True
+            assert tmap[("auth", "claude-laptop")] is False
+            print("OK: turn_complete tracked per-topic\n")
 
             # propose_edit + content on disk
             big_blob = "line " + "x" * 1024 + "\n"
@@ -266,6 +303,16 @@ async def main() -> int:
                 print("FAIL: oversize accepted"); return 1
             except Exception:
                 print("OK: size cap enforced\n")
+
+            # heartbeat is a no-op call that updates last_seen
+            hb = await claude.call_tool("heartbeat", {})
+            assert hb.data["peer_id"] == "claude-laptop" and hb.data["last_seen"]
+            peers_view = await claude.call_tool("list_peers", {})
+            by_id = {p["id"]: p for p in peers_view.data}
+            assert "claude-laptop" in by_id
+            assert "seconds_since_last_seen" in by_id["claude-laptop"]
+            assert by_id["claude-laptop"]["seconds_since_last_seen"] >= 0
+            print("OK: heartbeat + list_peers staleness\n")
 
         # ---------- MCP peer-auth negative cases ----------
         for label, peer, tok in [
