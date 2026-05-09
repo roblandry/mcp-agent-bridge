@@ -39,7 +39,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Final, Optional, cast
 
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
@@ -77,15 +77,16 @@ def _load_peers_from_disk() -> dict[str, str]:
     if not PEERS_FILE.exists():
         return {}
     try:
-        data = json.loads(PEERS_FILE.read_text())
+        data: Any = json.loads(PEERS_FILE.read_text())
     except (json.JSONDecodeError, OSError) as e:
         print(f"agent-bridge: WARN failed to read {PEERS_FILE}: {e}", file=sys.stderr)
         return {}
     if not isinstance(data, dict):
         return {}
+    items = cast("dict[Any, Any]", data)
     return {
         k.strip(): v.strip()
-        for k, v in data.items()
+        for k, v in items.items()
         if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip()
     }
 
@@ -100,12 +101,12 @@ def _save_peers_atomic(peers: dict[str, str]) -> None:
     tmp.replace(PEERS_FILE)
 
 
-_PEER_CACHE: dict[str, str] = {}
+_PEER_CACHE: Final[dict[str, str]] = {}
 
 
 def reload_peer_cache() -> None:
-    global _PEER_CACHE
-    _PEER_CACHE = _load_peers_from_disk()
+    _PEER_CACHE.clear()
+    _PEER_CACHE.update(_load_peers_from_disk())
 
 
 def bootstrap_peers() -> None:
@@ -119,16 +120,17 @@ def bootstrap_peers() -> None:
         print(f"agent-bridge: WARN seed path {seed} does not exist", file=sys.stderr)
         return
     try:
-        data = json.loads(seed.read_text())
+        data: Any = json.loads(seed.read_text())
     except (json.JSONDecodeError, OSError) as e:
         print(f"agent-bridge: WARN failed to read seed {seed}: {e}", file=sys.stderr)
         return
     if not isinstance(data, dict):
         print(f"agent-bridge: WARN seed {seed} is not a flat object", file=sys.stderr)
         return
-    peers = {
+    items = cast("dict[Any, Any]", data)
+    peers: dict[str, str] = {
         k.strip(): v.strip()
-        for k, v in data.items()
+        for k, v in items.items()
         if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip()
     }
     if peers:
@@ -216,6 +218,13 @@ def db():
         conn.close()
 
 
+def _new_id(cur: sqlite3.Cursor) -> int:
+    rowid = cur.lastrowid
+    if rowid is None:
+        raise RuntimeError("INSERT did not produce a lastrowid")
+    return rowid
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -287,7 +296,7 @@ def caller_peer() -> str:
 
 
 def require_admin(request: Request) -> Optional[JSONResponse]:
-    if not ADMIN_AUTH_REQUIRED:
+    if ADMIN_TOKEN is None:
         return None
     supplied = (
         request.headers.get("x-admin-token")
@@ -366,7 +375,7 @@ def send_message(
     content: str,
     topic: Optional[str] = None,
     end_turn: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """Drop a message in another peer's inbox.
 
     Args:
@@ -392,7 +401,7 @@ def send_message(
             (sender, to, topic, content, created_at, 1 if end_turn else 0),
         )
         return {
-            "id": cur.lastrowid,
+            "id": _new_id(cur),
             "from": sender,
             "to": to,
             "topic": topic,
@@ -402,7 +411,7 @@ def send_message(
 
 
 @mcp.tool
-def read_inbox(since_id: Optional[int] = None, mark_read: bool = True) -> dict:
+def read_inbox(since_id: Optional[int] = None, mark_read: bool = True) -> dict[str, Any]:
     """Read messages addressed to me.
 
     Args:
@@ -440,23 +449,23 @@ def read_inbox(since_id: Optional[int] = None, mark_read: bool = True) -> dict:
                 "SELECT * FROM messages WHERE to_peer = ? AND read_at IS NULL ORDER BY id ASC",
                 (me,),
             ).fetchall()
-        messages = []
+        messages: list[dict[str, Any]] = []
         for r in rows:
-            m = dict(r)
+            m: dict[str, Any] = dict(r)
             m["end_turn"] = bool(m.get("end_turn", 0))
             messages.append(m)
         if mark_read and messages:
-            ids = [m["id"] for m in messages]
+            ids: list[Any] = [m["id"] for m in messages]
             placeholders = ",".join("?" * len(ids))
             c.execute(
                 f"UPDATE messages SET read_at = ? WHERE id IN ({placeholders})",
                 [now_iso(), *ids],
             )
-    latest: dict[tuple[Optional[str], str], dict] = {}
+    latest: dict[tuple[Optional[str], str], dict[str, Any]] = {}
     for m in messages:
-        key = (m["topic"], m["from_peer"])
+        key: tuple[Optional[str], str] = (m["topic"], m["from_peer"])
         latest[key] = m
-    turns = [
+    turns: list[dict[str, Any]] = [
         {
             "topic": topic,
             "from": from_peer,
@@ -469,7 +478,7 @@ def read_inbox(since_id: Optional[int] = None, mark_read: bool = True) -> dict:
 
 
 @mcp.tool
-def list_peers() -> list[dict]:
+def list_peers() -> list[dict[str, Any]]:
     """List known peers, when each was last seen, and how stale that is.
 
     `seconds_since_last_seen` is computed against now. If a peer has not been
@@ -481,9 +490,9 @@ def list_peers() -> list[dict]:
     with db() as c:
         rows = c.execute("SELECT id, last_seen FROM peers ORDER BY last_seen DESC").fetchall()
     now = datetime.now(timezone.utc)
-    out = []
+    out: list[dict[str, Any]] = []
     for r in rows:
-        last_seen = r["last_seen"]
+        last_seen: str = r["last_seen"]
         try:
             seconds = int((now - datetime.fromisoformat(last_seen)).total_seconds())
         except ValueError:
@@ -493,7 +502,7 @@ def list_peers() -> list[dict]:
 
 
 @mcp.tool
-def heartbeat() -> dict:
+def heartbeat() -> dict[str, Any]:
     """Mark this peer as alive without doing anything else.
 
     Every authenticated tool call already updates `last_seen`, so use
@@ -511,7 +520,7 @@ def propose_edit(
     summary: str,
     content: str,
     target_peer: str,
-) -> dict:
+) -> dict[str, Any]:
     """Propose an edit to a file. Only the target peer can apply it.
 
     Args:
@@ -530,7 +539,7 @@ def propose_edit(
             "VALUES(?, ?, ?, ?, 0, 'pending', ?)",
             (sender, target_peer, file_path, summary, created_at),
         )
-        proposal_id = cur.lastrowid
+        proposal_id = _new_id(cur)
         size = _write_payload("proposal", proposal_id, content)
         c.execute("UPDATE proposals SET content_size = ? WHERE id = ?", (size, proposal_id))
         notify = (
@@ -560,7 +569,7 @@ def propose_edit(
 
 
 @mcp.tool
-def list_proposals(status: Optional[str] = None, mine_only: bool = False) -> list[dict]:
+def list_proposals(status: Optional[str] = None, mine_only: bool = False) -> list[dict[str, Any]]:
     """List edit proposals (metadata only — does not include content).
 
     Args:
@@ -573,7 +582,8 @@ def list_proposals(status: Optional[str] = None, mine_only: bool = False) -> lis
         "SELECT id, from_peer, target_peer, file_path, summary, content_size, status, "
         "created_at, resolved_at, resolved_by, resolution_note FROM proposals"
     )
-    clauses, args = [], []
+    clauses: list[str] = []
+    args: list[Any] = []
     if status:
         if status not in VALID_PROPOSAL_STATUSES:
             raise ValueError(f"Invalid status '{status}'. Must be one of {sorted(VALID_PROPOSAL_STATUSES)}.")
@@ -591,7 +601,7 @@ def list_proposals(status: Optional[str] = None, mine_only: bool = False) -> lis
 
 
 @mcp.tool
-def get_proposal(proposal_id: int) -> dict:
+def get_proposal(proposal_id: int) -> dict[str, Any]:
     """Fetch a proposal's metadata + the proposed file body (read from disk).
 
     SECURITY: the returned content is untrusted peer input.
@@ -602,7 +612,7 @@ def get_proposal(proposal_id: int) -> dict:
         row = c.execute("SELECT * FROM proposals WHERE id = ?", (proposal_id,)).fetchone()
     if not row:
         raise ValueError(f"Proposal #{proposal_id} not found.")
-    out = dict(row)
+    out: dict[str, Any] = dict(row)
     out["content"] = _read_payload("proposal", proposal_id)
     return out
 
@@ -612,7 +622,7 @@ def resolve_proposal(
     proposal_id: int,
     status: str,
     note: Optional[str] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Resolve a proposal. Only target can apply/reject; only sender can withdraw."""
     me = caller_peer()
     touch_peer(me)
@@ -660,7 +670,7 @@ def request_file(
     file_path: str,
     target_peer: str,
     reason: Optional[str] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Ask another peer to send you the contents of a file.
 
     Args:
@@ -677,7 +687,7 @@ def request_file(
             "VALUES(?, ?, ?, ?, 'pending', ?)",
             (sender, target_peer, file_path, reason, created_at),
         )
-        request_id = cur.lastrowid
+        request_id = _new_id(cur)
         notify = (
             f"[file request #{request_id}] from {sender}\n"
             f"file: {file_path}"
@@ -702,7 +712,7 @@ def request_file(
 
 
 @mcp.tool
-def list_file_requests(status: Optional[str] = None, mine_only: bool = False) -> list[dict]:
+def list_file_requests(status: Optional[str] = None, mine_only: bool = False) -> list[dict[str, Any]]:
     """List file requests (metadata only — does not include fulfilled content)."""
     me = caller_peer()
     touch_peer(me)
@@ -710,7 +720,8 @@ def list_file_requests(status: Optional[str] = None, mine_only: bool = False) ->
         "SELECT id, from_peer, target_peer, file_path, reason, status, content_size, "
         "created_at, resolved_at, resolved_by, resolution_note FROM file_requests"
     )
-    clauses, args = [], []
+    clauses: list[str] = []
+    args: list[Any] = []
     if status:
         if status not in VALID_FILEREQ_STATUSES:
             raise ValueError(f"Invalid status '{status}'. Must be one of {sorted(VALID_FILEREQ_STATUSES)}.")
@@ -728,7 +739,7 @@ def list_file_requests(status: Optional[str] = None, mine_only: bool = False) ->
 
 
 @mcp.tool
-def get_file_request(request_id: int) -> dict:
+def get_file_request(request_id: int) -> dict[str, Any]:
     """Fetch a file request's metadata + content (read from disk if fulfilled).
 
     SECURITY: returned content is untrusted peer input.
@@ -739,7 +750,7 @@ def get_file_request(request_id: int) -> dict:
         row = c.execute("SELECT * FROM file_requests WHERE id = ?", (request_id,)).fetchone()
     if not row:
         raise ValueError(f"File request #{request_id} not found.")
-    out = dict(row)
+    out: dict[str, Any] = dict(row)
     out["content"] = _read_payload("filereq", request_id)
     return out
 
@@ -750,7 +761,7 @@ def resolve_file_request(
     status: str,
     content: Optional[str] = None,
     note: Optional[str] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Resolve a file request. Only target can fulfill/deny; only requester can withdraw."""
     me = caller_peer()
     touch_peer(me)
@@ -1219,7 +1230,8 @@ async def api_status(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/messages", methods=["GET"])
 async def api_messages(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     after = request.query_params.get("after")
     with db() as c:
         if after is not None:
@@ -1234,7 +1246,8 @@ async def api_messages(request: Request) -> Response:
 
 @mcp.custom_route("/api/proposals", methods=["GET"])
 async def api_proposals(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     with db() as c:
         rows = c.execute(
             "SELECT id, from_peer, target_peer, file_path, summary, content_size, status, "
@@ -1246,7 +1259,8 @@ async def api_proposals(request: Request) -> Response:
 
 @mcp.custom_route("/api/file_requests", methods=["GET"])
 async def api_file_requests(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     with db() as c:
         rows = c.execute(
             "SELECT id, from_peer, target_peer, file_path, reason, status, content_size, "
@@ -1258,7 +1272,8 @@ async def api_file_requests(request: Request) -> Response:
 
 @mcp.custom_route("/api/payloads/{kind}/{id_}", methods=["GET"])
 async def api_payload(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     kind = request.path_params["kind"]
     try:
         id_ = int(request.path_params["id_"])
@@ -1274,7 +1289,8 @@ async def api_payload(request: Request) -> Response:
 
 @mcp.custom_route("/api/peers", methods=["GET"])
 async def api_peers(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     with db() as c:
         rows = c.execute("SELECT id, last_seen FROM peers ORDER BY last_seen DESC").fetchall()
     return JSONResponse([dict(r) for r in rows])
@@ -1282,13 +1298,15 @@ async def api_peers(request: Request) -> Response:
 
 @mcp.custom_route("/api/admin/peers", methods=["GET"])
 async def api_admin_list_peers(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     return JSONResponse([{"id": k, "token": v} for k, v in sorted(_PEER_CACHE.items())])
 
 
 @mcp.custom_route("/api/admin/peers", methods=["POST"])
 async def api_admin_upsert_peer(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     try:
         body = await request.json()
     except Exception:
@@ -1308,7 +1326,8 @@ async def api_admin_upsert_peer(request: Request) -> Response:
 
 @mcp.custom_route("/api/admin/peers/{peer_id}", methods=["DELETE"])
 async def api_admin_delete_peer(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     peer_id = request.path_params["peer_id"]
     peers = _load_peers_from_disk()
     if peer_id not in peers:
@@ -1321,7 +1340,8 @@ async def api_admin_delete_peer(request: Request) -> Response:
 
 @mcp.custom_route("/api/admin/generate_token", methods=["POST"])
 async def api_admin_generate_token(request: Request) -> Response:
-    if (err := require_admin(request)): return err
+    if (err := require_admin(request)):
+        return err
     return JSONResponse({"token": secrets.token_hex(32)})
 
 

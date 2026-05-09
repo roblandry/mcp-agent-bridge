@@ -18,8 +18,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
+from http.client import HTTPResponse
 from pathlib import Path
+from typing import Any
 
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
@@ -30,10 +33,13 @@ PORT = 18999
 URL = f"http://127.0.0.1:{PORT}/mcp"
 HTTP_BASE = f"http://127.0.0.1:{PORT}"
 ADMIN_TOKEN = "admin-tok-deadbeefcafef00d12345678abcdef00"
-SEED_PEERS = {"claude-laptop": "tok-claude-deadbeef-1234567890abcdef", "openclaw": "tok-clawd-cafef00d-1234567890abcdef"}
+SEED_PEERS: dict[str, str] = {
+    "claude-laptop": "tok-claude-deadbeef-1234567890abcdef",
+    "openclaw": "tok-clawd-cafef00d-1234567890abcdef",
+}
 
 
-def show(label, result):
+def show(label: str, result: Any) -> None:
     if hasattr(result, "data"):
         result = result.data
     print(f"--- {label} ---")
@@ -41,14 +47,27 @@ def show(label, result):
     print()
 
 
-def http_get(path, admin=True):
+def D(result: Any) -> Any:
+    """Cast a fastmcp CallToolResult.data through Any so strict pyright stops
+    flagging downstream indexing as partially unknown. The bridge's own tools
+    are typed; this just sidesteps fastmcp's loose stubs in the test driver."""
+    return result.data
+
+
+def http_get(path: str, admin: bool = True) -> HTTPResponse:
     req = urllib.request.Request(HTTP_BASE + path)
     if admin:
         req.add_header("X-Admin-Token", ADMIN_TOKEN)
     return urllib.request.urlopen(req, timeout=3)
 
 
-def http_json(method, path, body=None, admin=True, token=None):
+def http_json(
+    method: str,
+    path: str,
+    body: Any = None,
+    admin: bool = True,
+    token: str | None = None,
+) -> tuple[int, Any]:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(HTTP_BASE + path, data=data, method=method)
     if admin:
@@ -59,17 +78,17 @@ def http_json(method, path, body=None, admin=True, token=None):
         with urllib.request.urlopen(req, timeout=3) as r:
             return r.status, json.loads(r.read() or "null")
     except urllib.error.HTTPError as e:
-        body = e.read()
+        raw = e.read()
         try:
-            j = json.loads(body)
+            j: Any = json.loads(raw)
         except Exception:
-            j = {"raw": body.decode("utf-8", "replace")}
+            j = {"raw": raw.decode("utf-8", "replace")}
         return e.code, j
 
 
 def wait_ready(timeout: float = 25.0) -> None:
     deadline = time.time() + timeout
-    last_err = None
+    last_err: Exception | None = None
     while time.time() < deadline:
         try:
             with urllib.request.urlopen(f"{HTTP_BASE}/api/status", timeout=1) as r:
@@ -81,8 +100,8 @@ def wait_ready(timeout: float = 25.0) -> None:
     raise RuntimeError(f"server didn't come up: {last_err}")
 
 
-def mcp_client(peer: str, token: str | None = None) -> Client:
-    headers = {"X-Peer-Id": peer}
+def mcp_client(peer: str, token: str | None = None) -> Client[StreamableHttpTransport]:
+    headers: dict[str, str] = {"X-Peer-Id": peer}
     if token:
         headers["X-Peer-Token"] = token
     return Client(StreamableHttpTransport(URL, headers=headers))
@@ -145,7 +164,7 @@ async def main() -> int:
         code, body = http_json("POST", "/api/admin/generate_token")
         assert code == 200 and len(body["token"]) == 64, body
         new_token = body["token"]
-        print(f"OK: generate_token returned 64-char hex\n")
+        print("OK: generate_token returned 64-char hex\n")
 
         code, body = http_json("POST", "/api/admin/peers", {"id": "new-peer", "token": new_token})
         assert code == 200, body
@@ -170,7 +189,7 @@ async def main() -> int:
         print("OK: peer upsert validates token length + required fields\n")
 
         # delete the new peer
-        code, _ = http_json("DELETE", f"/api/admin/peers/new-peer")
+        code, _ = http_json("DELETE", "/api/admin/peers/new-peer")
         assert code == 200
         on_disk = json.loads(peers_json.read_text())
         assert "new-peer" not in on_disk
@@ -181,7 +200,8 @@ async def main() -> int:
         async with deleted_client:
             try:
                 await deleted_client.call_tool("list_peers", {})
-                print("FAIL: deleted peer's token should be rejected"); return 1
+                print("FAIL: deleted peer's token should be rejected")
+                return 1
             except Exception:
                 print("OK: deleted peer's MCP token immediately rejected\n")
 
@@ -195,12 +215,12 @@ async def main() -> int:
                 {"to": "openclaw", "content": "hello from claude", "topic": "smoke"},
             )
             show("send_message", sent)
-            inbox = await clawd.call_tool("read_inbox", {})
-            assert isinstance(inbox.data, dict) and "messages" in inbox.data and "turns" in inbox.data
-            msgs = inbox.data["messages"]
+            inbox_d = D(await clawd.call_tool("read_inbox", {}))
+            assert "messages" in inbox_d and "turns" in inbox_d
+            msgs = inbox_d["messages"]
             assert msgs and msgs[0]["content"] == "hello from claude"
             assert msgs[0]["end_turn"] is False, "default end_turn should be False"
-            turns = inbox.data["turns"]
+            turns = inbox_d["turns"]
             assert len(turns) == 1 and turns[0]["topic"] == "smoke"
             assert turns[0]["from"] == "claude-laptop"
             assert turns[0]["turn_complete"] is False, \
@@ -213,10 +233,10 @@ async def main() -> int:
                 "send_message",
                 {"to": "openclaw", "content": "ok done", "topic": "smoke", "end_turn": True},
             )
-            inbox2 = await clawd.call_tool("read_inbox", {})
-            msgs2 = inbox2.data["messages"]
+            inbox2 = D(await clawd.call_tool("read_inbox", {}))
+            msgs2 = inbox2["messages"]
             assert len(msgs2) == 1 and msgs2[0]["end_turn"] is True
-            turns2 = inbox2.data["turns"]
+            turns2 = inbox2["turns"]
             assert turns2[0]["topic"] == "smoke" and turns2[0]["turn_complete"] is True
             print("OK: end_turn=True flips turn_complete in turns summary\n")
 
@@ -255,7 +275,8 @@ async def main() -> int:
             # only target can apply
             try:
                 await claude.call_tool("resolve_proposal", {"proposal_id": proposal_id, "status": "applied"})
-                print("FAIL: claude shouldn't apply own proposal"); return 1
+                print("FAIL: claude shouldn't apply own proposal")
+                return 1
             except Exception:
                 print("OK: claude blocked from applying own proposal\n")
             await clawd.call_tool("resolve_proposal", {"proposal_id": proposal_id, "status": "applied"})
@@ -268,7 +289,8 @@ async def main() -> int:
             req_id = req.data["id"]
             try:
                 await claude.call_tool("resolve_file_request", {"request_id": req_id, "status": "fulfilled", "content": "spoof"})
-                print("FAIL: claude shouldn't fulfill own request"); return 1
+                print("FAIL: claude shouldn't fulfill own request")
+                return 1
             except Exception:
                 print("OK: claude blocked from fulfilling own request\n")
             await clawd.call_tool(
@@ -300,7 +322,8 @@ async def main() -> int:
             # size cap
             try:
                 await claude.call_tool("send_message", {"to": "openclaw", "content": "x" * (5 * 1024 * 1024 + 1)})
-                print("FAIL: oversize accepted"); return 1
+                print("FAIL: oversize accepted")
+                return 1
             except Exception:
                 print("OK: size cap enforced\n")
 
@@ -324,7 +347,8 @@ async def main() -> int:
             async with c:
                 try:
                     await c.call_tool("list_peers", {})
-                    print(f"FAIL: {label} accepted"); return 1
+                    print(f"FAIL: {label} accepted")
+                    return 1
                 except Exception:
                     print(f"OK: {label} rejected")
         print()
