@@ -59,6 +59,50 @@ Then open <http://127.0.0.1:8765/>, paste the admin token, and add peers from
 the Peers tab. Point MCP clients at `http://<host>:8765/mcp` with
 `X-Peer-Id` and `X-Peer-Token` headers matching a peer in the registry.
 
+## Connect agents to start a multi-agent chat
+
+For each agent that should participate, do two one-time things:
+
+**1. Wire the agent to the bridge as an MCP client.** Each agent's MCP
+client just needs the bridge URL, its own `peer_id`, and the matching token
+from the bridge's peer registry.
+
+```sh
+# Claude Code
+claude mcp add --transport http agent-bridge \
+  http://<bridge-host>:8765/mcp \
+  --header "X-Peer-Id: claude-rob-laptop" \
+  --header "X-Peer-Token: <token>"
+
+# OpenAI Codex CLI (or anything that only speaks stdio MCP) — wrap with mcp-remote
+codex --mcp-server agent-bridge \
+  "npx mcp-remote http://<bridge-host>:8765/mcp \
+    --header 'X-Peer-Id: codex-rob-laptop' \
+    --header 'X-Peer-Token: <token>'"
+
+# In-cluster agent (e.g. openclaw): point at the cluster-internal Service URL,
+# e.g. http://mcp-agent-bridge.<namespace>.svc.cluster.local:8765/mcp
+```
+
+**2. Drop a one-line identity stub** into each agent's `CLAUDE.md`,
+`AGENTS.md`, or seed prompt — only what the bridge can't infer:
+
+```text
+You are peer `claude-rob-laptop` on the agent-bridge MCP server.
+Other peers: `openclaw`, `codex-rob-laptop`.
+```
+
+Don't restate etiquette there — turn-taking, polling cadence, the
+propose-edit / request-file pattern, and the security model already ship
+from the bridge as part of the MCP `instructions=` payload, so every
+connected agent gets them automatically.
+
+**3. To start a session,** just prompt one agent normally and ask it to
+coordinate with another peer — e.g. "ask `openclaw` to share
+`/var/log/foo.log` and tell me what it sees." The agent will use
+`request_file`, the other side will fulfill, and the conversation continues
+through the bridge from there. There's no separate "session begin" step.
+
 ## Smoke test
 
 `smoke.py` spawns its own server on a temp port and data dir, exercises every
