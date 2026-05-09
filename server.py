@@ -3,6 +3,7 @@
 # dependencies = [
 #   "fastmcp>=2.10",
 #   "mistune>=3",
+#   "pygments>=2",
 #   "starlette>=0.40",
 #   "uvicorn>=0.30",
 # ]
@@ -46,6 +47,16 @@ from typing import Any, Final, Optional, cast
 import mistune
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
+from pygments import highlight as _pyg_highlight
+from pygments.formatters.html import HtmlFormatter
+from pygments.lexer import Lexer
+from pygments.lexers import (
+    get_lexer_by_name,  # pyright: ignore[reportUnknownVariableType]
+    get_lexer_for_filename,  # pyright: ignore[reportUnknownVariableType]
+    guess_lexer,  # pyright: ignore[reportUnknownVariableType]
+)
+from pygments.lexers.special import TextLexer  # pyright: ignore[reportMissingTypeStubs]
+from pygments.util import ClassNotFound
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
@@ -358,6 +369,16 @@ Workflow
   read from a peer-owned path yourself.
 - `list_proposals` and `list_file_requests` are metadata-only catalogs —
   use the matching `get_*` tool to fetch bodies.
+
+Formatting
+----------
+- `send_message` content is treated as Markdown by the human-facing web UI:
+  use fenced code blocks (with a language tag like ```python) for code,
+  inline backticks for short identifiers, and the usual headers / lists /
+  bold / links for structure. Code blocks are syntax-highlighted, and long
+  fences (>8 lines) collapse by default. The peer that reads your message
+  via `read_inbox` still receives the raw markdown text — formatting is
+  only applied for the human reviewer.
 
 Security
 --------
@@ -825,16 +846,47 @@ def resolve_file_request(
 # ---------- web UI + admin API ----------
 
 
+_HL_FORMATTER: HtmlFormatter[Any] = HtmlFormatter(nowrap=True, style="monokai")
+HIGHLIGHTER_CSS: str = cast(str, HtmlFormatter(style="monokai").get_style_defs(".hl"))  # pyright: ignore[reportUnknownMemberType]
+
+
+def _pick_lexer(content: str, info: Optional[str] = None, file_path: Optional[str] = None) -> Lexer:
+    """Resolve a Pygments lexer. Prefer an explicit info string (markdown
+    fence language), then file-name extension, then guess from content."""
+    if info:
+        try:
+            return get_lexer_by_name(info.strip().split()[0], stripall=False)
+        except ClassNotFound:
+            pass
+    if file_path:
+        try:
+            return get_lexer_for_filename(file_path, content, stripall=False)
+        except ClassNotFound:
+            pass
+    try:
+        return guess_lexer(content)
+    except ClassNotFound:
+        return TextLexer()
+
+
+def highlight_code(content: str, info: Optional[str] = None, file_path: Optional[str] = None) -> str:
+    """Pygments-highlighted spans (no outer wrapper). The caller wraps in a
+    <pre class="hl"> so the .hl-prefixed CSS rules apply."""
+    lexer = _pick_lexer(content, info=info, file_path=file_path)
+    return _pyg_highlight(content, lexer, _HL_FORMATTER)
+
+
 class _BridgeMarkdownRenderer(mistune.HTMLRenderer):
-    """HTML renderer that wraps long fenced code blocks in <details> so they
-    collapse by default in the messages UI. Everything else is standard
-    mistune HTML output (with HTML-in-markdown escaped, since peer content
-    is untrusted)."""
+    """HTML renderer that runs fenced code blocks through Pygments and
+    wraps long ones in <details> so they collapse by default in the
+    messages UI. Everything else is standard mistune HTML output (with
+    HTML-in-markdown escaped, since peer content is untrusted)."""
 
     LINE_THRESHOLD = 8
 
     def block_code(self, code: str, info: Optional[str] = None) -> str:
-        body = super().block_code(code, info)
+        spans = highlight_code(code, info=info)
+        body = f'<pre class="hl">{spans}</pre>\n'
         line_count = code.count("\n") + (0 if code.endswith("\n") else 1)
         if line_count <= self.LINE_THRESHOLD:
             return body
@@ -857,7 +909,7 @@ def render_markdown(text: str) -> str:
     return out if isinstance(out, str) else ""
 
 
-INDEX_HTML = """<!doctype html>
+_INDEX_HTML_TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -871,6 +923,7 @@ INDEX_HTML = """<!doctype html>
   }
   html { font-size: 17.5px; }   /* 1.25x of the previous 14px baseline */
   body { background: var(--bg); color: var(--fg); font: 1rem/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; }
+  .topbar { position: sticky; top: 0; z-index: 10; background: var(--bg); }
   header { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; }
   header h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
   header .auth { font-size: 0.86rem; }
@@ -890,6 +943,10 @@ INDEX_HTML = """<!doctype html>
   .row .meta { color: var(--muted); font-size: 0.86rem; display: flex; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
   .row .meta .from { color: var(--accent); }
   .row pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0 0; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+
+  /* Pygments syntax highlighting (style: monokai) */
+  pre.hl { background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px; margin: 6px 0; }
+  /*PYGMENTS_CSS*/
 
   /* rendered markdown inside a .row */
   .md { line-height: 1.5; }
@@ -965,18 +1022,20 @@ INDEX_HTML = """<!doctype html>
 </div>
 
 <div id="app-view" hidden>
-  <header>
-    <h1>agent-bridge</h1>
-    <div class="auth" id="auth"></div>
-    <div class="peers" id="peers">no peers seen yet</div>
-    <button class="logout" id="logout">logout</button>
-  </header>
-  <nav>
-    <button id="tab-messages" class="active">messages</button>
-    <button id="tab-proposals">edit proposals</button>
-    <button id="tab-filereqs">file requests</button>
-    <button id="tab-admin-peers">peers</button>
-  </nav>
+  <div class="topbar">
+    <header>
+      <h1>agent-bridge</h1>
+      <div class="auth" id="auth"></div>
+      <div class="peers" id="peers">no peers seen yet</div>
+      <button class="logout" id="logout">logout</button>
+    </header>
+    <nav>
+      <button id="tab-messages" class="active">messages</button>
+      <button id="tab-proposals">edit proposals</button>
+      <button id="tab-filereqs">file requests</button>
+      <button id="tab-admin-peers">peers</button>
+    </nav>
+  </div>
   <main>
     <section id="view-messages">
       <div class="filter">show: <select id="msg-filter"><option value="all">all</option><option value="unread">unread only</option></select></div>
@@ -1302,7 +1361,7 @@ document.addEventListener('toggle', async (e) => {
   payloadState.set(key, cur);
   if (!e.target.open) return;
   if (cur.content !== undefined) {
-    pre.textContent = cur.content;
+    pre.innerHTML = cur.content;
     pre.dataset.loaded = '1';
     return;
   }
@@ -1310,8 +1369,10 @@ document.addEventListener('toggle', async (e) => {
   try {
     const r = await api(`/api/payloads/${pre.dataset.kind}/${pre.dataset.id}`);
     if (!r.ok) { pre.textContent = `(error ${r.status})`; return; }
+    // The server returns Pygments-highlighted HTML; trust it because it's
+    // generated by us, not echoed peer content.
     const content = await r.text();
-    pre.textContent = content;
+    pre.innerHTML = content;
     pre.dataset.loaded = '1';
     cur.content = content;
     payloadState.set(key, cur);
@@ -1329,7 +1390,7 @@ function restorePayloadState(containerId) {
     const state = payloadState.get(payloadKey(pre));
     if (!state) return;
     if (state.content !== undefined) {
-      pre.textContent = state.content;
+      pre.innerHTML = state.content;
       pre.dataset.loaded = '1';
     }
     if (state.open) {
@@ -1355,6 +1416,8 @@ setInterval(() => { if (!$('app-view').hidden) refresh(); }, 2000);
 </body>
 </html>
 """
+
+INDEX_HTML: Final[str] = _INDEX_HTML_TEMPLATE.replace("/*PYGMENTS_CSS*/", HIGHLIGHTER_CSS)
 
 
 @mcp.custom_route("/", methods=["GET"])
@@ -1434,7 +1497,18 @@ async def api_payload(request: Request) -> Response:
     body = _read_payload(kind, id_)
     if body is None:
         return PlainTextResponse("not found", status_code=404)
-    return PlainTextResponse(body)
+    # `?raw=1` returns the unrendered body (useful for downloads / debugging);
+    # default response is a Pygments-highlighted HTML fragment for the UI.
+    if request.query_params.get("raw") == "1":
+        return PlainTextResponse(body)
+    file_path: Optional[str] = None
+    table = "proposals" if kind == "proposal" else "file_requests"
+    with db() as c:
+        row = c.execute(f"SELECT file_path FROM {table} WHERE id = ?", (id_,)).fetchone()
+        if row is not None:
+            file_path = row["file_path"]
+    spans = highlight_code(body, file_path=file_path)
+    return HTMLResponse(f'<pre class="hl">{spans}</pre>')
 
 
 @mcp.custom_route("/api/peers", methods=["GET"])

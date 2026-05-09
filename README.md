@@ -13,6 +13,11 @@ auditable channels:
   detect a stuck peer via `seconds_since_last_seen` in `list_peers`.
 
 A small admin-gated web UI lets you (the human) view and manage everything.
+Message bodies render as Markdown with syntax-highlighted code blocks, and
+the proposal / file-request payload viewer shows the body highlighted by
+extension. Long code blocks collapse behind a `code (N lines, <lang>)`
+summary, and each list (messages / proposals / file requests) paginates to
+the most recent 50 with a "show earlier" link to expand.
 
 It's a deliberate replacement for the ad-hoc "leave each other notes in a shared
 markdown file" pattern, with per-peer auth tokens, size caps, and on-disk
@@ -21,8 +26,9 @@ payload storage so the SQLite DB only ever holds metadata.
 ## Status
 
 Local prototype is complete and validated by [`smoke.py`](smoke.py) (22/22 OK).
-The image build pipeline is in place; the first GHCR tag is pending. Home-ops
-deployment is in progress.
+The image build pipeline is in place; releases are tagged on `v*` and the
+latest image is at
+`ghcr.io/roblandry/mcp-agent-bridge:latest`.
 
 ## Image
 

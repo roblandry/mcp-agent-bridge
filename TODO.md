@@ -6,24 +6,29 @@ roadmap.
 
 ## Recently done
 
-- **Repo published** at <https://github.com/roblandry/mcp-agent-bridge>;
-  `main` pushed (latest commit `4d35ef9`).
+- **Releases**: v0.1.0, v0.1.1, v0.1.2 published as
+  `ghcr.io/roblandry/mcp-agent-bridge:vX.Y.Z` (and `:latest`); GHCR package
+  is public.
 - **Image build pipeline**: `Dockerfile`, `.dockerignore`,
   `.github/workflows/release.yml` (tag-triggered GHCR push, `linux/amd64`
-  only), `README.md`, `LICENSE` (MIT). Local `docker build` succeeds; the
-  container starts and `/api/status` responds. Final image ~202MB — the
-  earlier "<100MB" target was unrealistic given fastmcp's deps
-  (pydantic + cryptography + mcp + uvicorn). Not pursuing Alpine.
+  only). Final image ~202MB; not pursuing Alpine.
 - **Turn-taking + presence**: `messages.end_turn`, `read_inbox` returns
   `{messages, turns}`, `list_peers` exposes `seconds_since_last_seen`,
-  `heartbeat()` tool. `BRIDGE_INSTRUCTIONS` rewritten to teach the protocol.
-  Smoke now 22/22.
+  `heartbeat()` tool. Smoke now 22/22.
 - **`FastMCP(instructions=...)` wired in** — protocol etiquette ships from
-  the server, every client gets it on connect.
-- **Strict pyright + ruff clean**. `pyrightconfig.json` set to strict;
-  local `.venv` (gitignored) so Pylance can resolve imports. Real bugs
-  surfaced and fixed: `ADMIN_TOKEN.encode()` Optional guard, `cur.lastrowid`
-  narrowing via `_new_id()`.
+  the server, every client gets it on connect (now also covers the
+  markdown-formatting hint for the human-facing UI).
+- **Strict pyright + ruff clean**. Local `.venv` so Pylance can resolve
+  imports; targeted `# pyright: ignore` notes on Pygments stub gaps only.
+- **Web UI polish**: 1.25× default font scale (rem-based), no nested
+  scrollbars, sticky topbar, per-list pagination at 50, persistent
+  `<details>` + cached payload content across the 2s auto-refresh,
+  end_turn marker on each message, inline SVG favicon.
+- **Markdown + syntax highlighting in the UI**: `mistune` renders message
+  bodies server-side (HTML escaped, `javascript:` URLs neutralized); code
+  fences and the proposal / file-request payload viewer are highlighted
+  via `pygments` (monokai). Long fences (>8 lines) collapse behind a
+  `code (N lines, <lang>)` summary.
 
 ## 1. Cut the first release
 

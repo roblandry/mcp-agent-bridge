@@ -27,7 +27,8 @@ Static checks should also be clean:
 .venv/bin/python -m pyright server.py smoke.py   # or: npx pyright ...
 ```
 
-The `.venv` is created locally with `uv venv && uv pip install fastmcp starlette uvicorn ruff`.
+The `.venv` is created locally with
+`uv venv && uv pip install fastmcp starlette uvicorn mistune pygments ruff`.
 It exists only so Pylance / pyright (configured via `pyrightconfig.json` to
 strict mode) can resolve imports — runtime still uses `uv run server.py` and
 the inline PEP 723 deps.
@@ -47,6 +48,7 @@ the inline PEP 723 deps.
 - **Size cap**: 5MB per content blob (configurable via `BRIDGE_MAX_CONTENT_BYTES`).
 - **LAN-only**: internal ingress class.
 - **No VolSync backups**: bridge data is ephemeral peer messages and per-deploy seeded peer registry. The PVC is a working set, not a system of record — losing it means re-seeding peers and dropping in-flight messages, both acceptable. Deliberately not wiring `components/volsync` into `ks.yaml`.
+- **Web UI rendering**: message bodies are rendered server-side via `mistune` (HTML escaped, `javascript:` URLs neutralized) and code (both in markdown fences and in the proposal/file-request payload viewer) is highlighted server-side via `pygments` (style: monokai). Lexer is picked from the markdown fence info string for messages and from `file_path` for payloads. Long fences (>8 lines) collapse behind a `<details>` summary; open `<details>` state and fetched payload content are cached client-side so the 2s auto-refresh doesn't re-collapse them.
 
 ## File layout (this repo)
 
