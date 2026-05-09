@@ -18,12 +18,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ---- Stage 2: minimal runtime ----
 FROM python:3.13-slim AS runtime
 
+# BRIDGE_VERSION is set by the release workflow from the git tag (e.g.
+# v0.1.4); falls back to "dev" for local docker builds. Surfaced via
+# /api/status and shown in the web UI header.
+ARG BRIDGE_VERSION=dev
+
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     BRIDGE_HOST=0.0.0.0 \
     BRIDGE_PORT=8765 \
-    BRIDGE_DATA_DIR=/data
+    BRIDGE_DATA_DIR=/data \
+    BRIDGE_VERSION=${BRIDGE_VERSION}
 
 RUN groupadd --system --gid 1000 app \
  && useradd --system --uid 1000 --gid app --home-dir /app --shell /usr/sbin/nologin app \

@@ -67,6 +67,10 @@ PEERS_FILE = DATA_DIR / "peers.json"
 HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("BRIDGE_PORT", "8765"))
 MAX_CONTENT_BYTES = int(os.environ.get("BRIDGE_MAX_CONTENT_BYTES", str(5 * 1024 * 1024)))
+# Surfaced in /api/status and the web UI header; baked into the image at
+# build time via the BRIDGE_VERSION ARG in the Dockerfile (the workflow sets
+# it from the v* tag). Defaults to "dev" for `uv run server.py` locally.
+BRIDGE_VERSION = (os.environ.get("BRIDGE_VERSION") or "dev").strip()
 
 ADMIN_TOKEN = (os.environ.get("BRIDGE_ADMIN_TOKEN") or "").strip() or None
 ADMIN_AUTH_REQUIRED = ADMIN_TOKEN is not None
@@ -926,6 +930,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .topbar { position: sticky; top: 0; z-index: 10; background: var(--bg); }
   header { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 24px; flex-wrap: wrap; }
   header h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+  header h1 .version { color: var(--muted); font-size: 0.79rem; font-weight: 400; margin-left: 8px; }
   header .auth { font-size: 0.86rem; }
   header .auth.on { color: var(--ok); }
   header .auth.off { color: var(--warn); }
@@ -971,8 +976,18 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .md th { background: var(--input-bg); }
   .md hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
   .md details.codeblock { margin: 6px 0; }
-  .md details.codeblock > summary { color: var(--muted); font-size: 0.86rem; padding: 4px 0; }
-  .md details.codeblock[open] > summary { color: var(--fg); }
+  .md details.codeblock > summary {
+    display: inline-block;
+    padding: 4px 10px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg);
+    font-size: 0.86rem;
+    margin-bottom: 4px;
+  }
+  .md details.codeblock > summary:hover { border-color: var(--accent); color: var(--accent); }
+  .md details.codeblock[open] > summary { color: var(--accent); border-color: var(--accent); }
   .md details.codeblock > pre { margin-top: 0; }
   .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--pill-bg); font-size: 0.79rem; }
   .pill.pending { color: var(--warn); }
@@ -1024,7 +1039,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
 <div id="app-view" hidden>
   <div class="topbar">
     <header>
-      <h1>agent-bridge</h1>
+      <h1>agent-bridge<span class="version" id="version"></span></h1>
       <div class="auth" id="auth"></div>
       <div class="peers" id="peers">no peers seen yet</div>
       <button class="logout" id="logout">logout</button>
@@ -1199,6 +1214,8 @@ function renderStatus(s) {
   const el = $('auth');
   if (s.peer_count) { el.textContent = 'peer auth: ON ('+s.peer_count+' registered)'; el.className='auth on'; }
   else { el.textContent = 'no peers — add one in the peers tab'; el.className='auth off'; }
+  const v = $('version');
+  if (v) v.textContent = s.version || '';
 }
 
 function renderPeers(peers) {
@@ -1217,7 +1234,7 @@ function renderMessages(msgs) {
   $('messages').innerHTML = header + visible.map(m => {
     const cls = m.proposal_id ? 'proposal' : (m.file_request_id ? 'filereq' : '');
     return `
-    <div class="row">
+    <div class="row" data-msg-id="${m.id}">
       <div class="meta">
         <span>#${m.id}</span>
         <span class="from">${esc(m.from_peer)}</span>
@@ -1230,6 +1247,7 @@ function renderMessages(msgs) {
       <div class="md">${m.content_html || `<pre>${esc(m.content)}</pre>`}</div>
     </div>`;
   }).join('');
+  restoreCodeblockState();
 }
 
 function renderProposals(props) {
@@ -1347,12 +1365,34 @@ document.addEventListener('click', async (e) => {
 // don't re-show "loading…" every time.
 const payloadState = new Map();
 
+// Per-codeblock state cache keyed by `m{msgId}.{idx}`. Same idea: keep
+// markdown-rendered code blocks open across the auto-refresh.
+const codeblockState = new Map();
+
+function restoreCodeblockState() {
+  const root = $('messages');
+  if (!root) return;
+  root.querySelectorAll('[data-msg-id]').forEach((row) => {
+    const id = row.dataset.msgId;
+    row.querySelectorAll('details.codeblock').forEach((d, idx) => {
+      const key = `m${id}.${idx}`;
+      d.dataset.cbKey = key;
+      if (codeblockState.get(key) === true) d.open = true;
+    });
+  });
+}
+
 function payloadKey(el) {
   return `${el.dataset.kind}:${el.dataset.id}`;
 }
 
 document.addEventListener('toggle', async (e) => {
   if (!(e.target instanceof HTMLDetailsElement)) return;
+  if (e.target.classList.contains('codeblock')) {
+    const key = e.target.dataset.cbKey;
+    if (key) codeblockState.set(key, e.target.open);
+    return;
+  }
   const pre = e.target.querySelector('pre.payload');
   if (!pre) return;
   const key = payloadKey(pre);
@@ -1432,6 +1472,7 @@ async def api_status(request: Request) -> JSONResponse:
             "admin_auth_required": ADMIN_AUTH_REQUIRED,
             "peer_count": len(_PEER_CACHE),
             "max_content_bytes": MAX_CONTENT_BYTES,
+            "version": BRIDGE_VERSION,
         }
     )
 

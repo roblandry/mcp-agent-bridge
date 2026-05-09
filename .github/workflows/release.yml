@@ -12,7 +12,7 @@ on:
         required: false
 
 permissions:
-  contents: read
+  contents: write   # gh release create on tag push
   packages: write
 
 env:
@@ -26,6 +26,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # full history + annotated tag objects so the release step can
+          # read the tag's annotation as the release-notes body.
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -62,6 +66,24 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BRIDGE_VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Use the annotated tag's message as release notes; fall back to a
+          # one-liner if the tag turns out to be lightweight.
+          notes=$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}")
+          if [ -z "${notes}" ]; then
+            notes="${GITHUB_REF_NAME}"
+          fi
+          printf '%s\n' "${notes}" > /tmp/release-notes.txt
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file /tmp/release-notes.txt
