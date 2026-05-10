@@ -91,6 +91,9 @@ def _resolve_style(requested: str) -> str:
 HIGHLIGHT_STYLE: Final[str] = _resolve_style(
     (os.environ.get("BRIDGE_HIGHLIGHT_STYLE") or "fruity").strip()
 )
+# Sender shown on messages posted from the admin web UI's sessions form.
+# Distinct from agent peer ids; not stored in the peer registry (no MCP token).
+ADMIN_PEER_NAME: Final[str] = (os.environ.get("BRIDGE_ADMIN_PEER_NAME") or "admin").strip()
 
 ADMIN_TOKEN = (os.environ.get("BRIDGE_ADMIN_TOKEN") or "").strip() or None
 ADMIN_AUTH_REQUIRED = ADMIN_TOKEN is not None
@@ -1001,7 +1004,36 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   nav button.active { color: var(--fg); border-bottom: 2px solid var(--accent); }
   main { padding: 12px 18px; max-width: 1100px; margin: 0 auto; }
   .empty { color: var(--muted); padding: 20px 0; text-align: center; }
+  .empty a.show-more { color: var(--accent); text-decoration: none; padding: 6px 14px; border: 1px solid var(--border); border-radius: 4px; }
+  .empty a.show-more:hover { border-color: var(--accent); background: var(--input-bg); }
   .row { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 20px; padding: 20px; }
+
+  /* sessions tab */
+  .session-row { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 14px; padding: 14px 18px; cursor: pointer; transition: border-color 0.1s, background 0.1s; }
+  .session-row:hover { border-color: var(--accent); background: var(--input-bg); }
+  .session-row .session-topic { color: var(--accent); font-weight: 600; font-size: 1.05rem; margin-bottom: 4px; }
+  .session-row .session-topic.empty-topic { color: var(--muted); font-style: italic; }
+  .session-row .session-preview { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; }
+  .session-row .session-meta { color: var(--muted); font-size: 0.86rem; display: flex; gap: 14px; flex-wrap: wrap; }
+  .session-row .session-meta .unread { color: var(--warn); font-weight: 600; }
+  .session-row .session-meta .participants { color: var(--accent); }
+
+  .session-focus-header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .session-focus-header h2 { margin: 0; font-size: 1.2rem; color: var(--accent); }
+  .session-focus-header .session-meta { color: var(--muted); font-size: 0.86rem; }
+  .link-button { background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 0; font-size: 0.93rem; }
+  .link-button:hover { color: var(--fg); }
+
+  .session-send-form { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--input-bg); }
+  .session-send-form .row-line { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
+  .session-send-form .row-line:last-child { margin-bottom: 0; }
+  .session-send-form label { color: var(--muted); font-size: 0.86rem; display: inline-flex; align-items: center; gap: 6px; }
+  .session-send-form select { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font: inherit; }
+  .session-send-form textarea { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; font: 0.93rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; resize: vertical; min-height: 64px; }
+  .session-send-form button[type="submit"] { background: var(--accent); color: #0e1116; border: 0; border-radius: 4px; padding: 6px 14px; cursor: pointer; font: inherit; font-weight: 600; }
+  .session-send-form button[type="submit"]:disabled { opacity: 0.5; cursor: not-allowed; }
+  .session-send-form .end-turn-label { color: var(--fg); }
+  .form-err { color: var(--err); font-size: 0.86rem; flex: 1; }
   .row .meta { color: var(--muted); font-size: 0.86rem; display: flex; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
   .row .meta .from { color: var(--accent); }
   .row pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0 0; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
@@ -1102,14 +1134,37 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
       <button class="logout" id="logout">logout</button>
     </header>
     <nav>
-      <button id="tab-messages" class="active">messages</button>
+      <button id="tab-sessions" class="active">sessions</button>
+      <button id="tab-messages">messages</button>
       <button id="tab-proposals">edit proposals</button>
       <button id="tab-filereqs">file requests</button>
       <button id="tab-admin-peers">peers</button>
     </nav>
   </div>
   <main>
-    <section id="view-messages">
+    <section id="view-sessions">
+      <div id="sessions-list"></div>
+      <div id="sessions-focus" hidden>
+        <div class="session-focus-header">
+          <button id="sessions-back" class="link-button">← back to sessions</button>
+          <h2 id="sessions-focus-topic"></h2>
+          <span id="sessions-focus-meta" class="session-meta"></span>
+        </div>
+        <div id="sessions-focus-messages"></div>
+        <form id="sessions-send-form" class="session-send-form">
+          <div class="row-line">
+            <label>to: <select id="sessions-send-to"></select></label>
+            <label class="end-turn-label"><input type="checkbox" id="sessions-send-end-turn" checked /> end turn</label>
+          </div>
+          <textarea id="sessions-send-content" placeholder="write a message…" rows="3"></textarea>
+          <div class="row-line">
+            <span id="sessions-send-err" class="form-err"></span>
+            <button type="submit" id="sessions-send-submit">send as <span id="sessions-send-as">admin</span></button>
+          </div>
+        </form>
+      </div>
+    </section>
+    <section id="view-messages" hidden>
       <div class="filter">
         topic: <select id="msg-topic-filter"><option value="all">all topics</option></select>
         &nbsp;·&nbsp;
@@ -1198,7 +1253,7 @@ $('login-token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('
 
 $('logout').onclick = () => { clearToken(); showLogin(); };
 
-let activeTab = 'messages';
+let activeTab = 'sessions';
 
 const PAGE = 50;
 const limits = { messages: PAGE, proposals: PAGE, filereqs: PAGE };
@@ -1218,12 +1273,12 @@ function moreLink(key, hidden, label) {
   if (hidden <= 0) return '';
   return `<div class="empty"><a href="#" class="show-more" data-key="${key}">show ${hidden} earlier ${label}${hidden===1?'':'s'}</a></div>`;
 }
-for (const t of ['messages','proposals','filereqs','admin-peers']) {
+for (const t of ['sessions','messages','proposals','filereqs','admin-peers']) {
   $('tab-'+t).onclick = () => switchTab(t);
 }
 function switchTab(t) {
   activeTab = t;
-  for (const id of ['messages','proposals','filereqs','admin-peers']) {
+  for (const id of ['sessions','messages','proposals','filereqs','admin-peers']) {
     $('tab-'+id).classList.toggle('active', id===t);
     $('view-'+id).hidden = id!==t;
   }
@@ -1236,6 +1291,38 @@ $('msg-topic-filter').onchange = () => {
 };
 $('prop-filter').onchange = refresh;
 $('freq-filter').onchange = refresh;
+
+$('sessions-send-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const errEl = $('sessions-send-err');
+  errEl.textContent = '';
+  const submit = $('sessions-send-submit');
+  const to = $('sessions-send-to').value;
+  const content = $('sessions-send-content').value.trim();
+  const endTurn = $('sessions-send-end-turn').checked;
+  if (!to) { errEl.textContent = 'pick a recipient'; return; }
+  if (!content) { errEl.textContent = 'message body is empty'; return; }
+  // Use the focused session's topic; null for the (no topic) bucket.
+  const topic = (activeSessionTopic === null || activeSessionTopic === undefined) ? null : activeSessionTopic;
+  submit.disabled = true;
+  try {
+    const r = await api('/api/admin/messages', {
+      method: 'POST',
+      body: JSON.stringify({ to, content, topic, end_turn: endTurn }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      errEl.textContent = j.error || ('error: ' + r.status);
+      return;
+    }
+    $('sessions-send-content').value = '';
+    // Don't refresh manually; the SSE message_added broadcast will trigger it.
+  } catch (err) {
+    errEl.textContent = 'send failed: ' + err;
+  } finally {
+    submit.disabled = false;
+  }
+};
 
 $('gen-token').onclick = async () => {
   const r = await api('/api/admin/generate_token', { method: 'POST' });
@@ -1287,6 +1374,7 @@ async function refresh() {
   ]);
   renderStatus(status);
   renderPeers(peers);
+  renderSessions(msgs, peers);
   renderMessages(msgs);
   renderProposals(props);
   renderFileRequests(freqs);
@@ -1299,6 +1387,11 @@ function renderStatus(s) {
   else { el.textContent = 'no peers — add one in the peers tab'; el.className='auth off'; }
   const v = $('version');
   if (v) v.textContent = s.version || '';
+  if (s.admin_peer_name) {
+    adminPeerName = s.admin_peer_name;
+    const lbl = $('sessions-send-as');
+    if (lbl) lbl.textContent = adminPeerName;
+  }
 }
 
 function renderPeers(peers) {
@@ -1328,6 +1421,119 @@ function refreshTopicOptions(msgs) {
   sel.innerHTML = opts;
   // Restore selection if the option still exists; otherwise fall back to "all".
   sel.value = [...sel.options].some(o => o.value === desired) ? desired : 'all';
+}
+
+// --- sessions tab ---
+
+let activeSessionTopic = undefined; // undefined = list view; null/string = focused topic
+let adminPeerName = 'admin';
+
+function sessionKey(t) { return t === null || t === undefined ? '__none__' : t; }
+function sessionLabel(t) { return t ? t : '(no topic)'; }
+
+function renderSessions(msgs, peers) {
+  // Group messages by topic. Each session aggregates: count, unread count,
+  // participants (peer ids who appear as from or to), latest message.
+  const groups = new Map();
+  for (const m of msgs) {
+    const k = sessionKey(m.topic);
+    let g = groups.get(k);
+    if (!g) {
+      g = { topic: m.topic, messages: [], unread: 0, participants: new Set(), latest: m };
+      groups.set(k, g);
+    }
+    g.messages.push(m);
+    if (m.from_peer) g.participants.add(m.from_peer);
+    if (m.to_peer) g.participants.add(m.to_peer);
+    if (!m.read_at) g.unread += 1;
+    if (!g.latest || m.id > g.latest.id) g.latest = m;
+  }
+  if (activeSessionTopic === undefined) {
+    renderSessionsList(groups);
+  } else {
+    renderSessionFocus(activeSessionTopic, groups, peers);
+  }
+}
+
+function renderSessionsList(groups) {
+  $('sessions-focus').hidden = true;
+  $('sessions-list').hidden = false;
+  if (!groups.size) {
+    $('sessions-list').innerHTML = '<div class="empty">no sessions yet — once an agent sends a message with a topic, it shows up here</div>';
+    return;
+  }
+  // Sort by latest message id desc
+  const ordered = [...groups.values()].sort((a, b) => b.latest.id - a.latest.id);
+  $('sessions-list').innerHTML = ordered.map(g => {
+    const topicCls = g.topic ? '' : ' empty-topic';
+    const preview = (g.latest.content || '').replace(/\n+/g, ' ').slice(0, 200);
+    const participants = [...g.participants].sort().join(', ');
+    return `
+      <div class="session-row" data-topic="${esc(sessionKey(g.topic))}">
+        <div class="session-topic${topicCls}">${esc(sessionLabel(g.topic))}</div>
+        <div class="session-preview"><span class="from">${esc(g.latest.from_peer)}</span>: ${esc(preview)}</div>
+        <div class="session-meta">
+          <span>${g.messages.length} message${g.messages.length===1?'':'s'}</span>
+          ${g.unread ? `<span class="unread">${g.unread} unread</span>` : ''}
+          <span class="participants">${esc(participants)}</span>
+          <span>· last: ${fmtTs(g.latest.created_at)}</span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderSessionFocus(topicKey, groups, peers) {
+  $('sessions-list').hidden = true;
+  $('sessions-focus').hidden = false;
+  const g = groups.get(topicKey === null ? '__none__' : topicKey);
+  $('sessions-focus-topic').textContent = sessionLabel(topicKey);
+  if (!g) {
+    $('sessions-focus-messages').innerHTML = '<div class="empty">no messages in this session yet</div>';
+    $('sessions-focus-meta').textContent = '';
+  } else {
+    const ordered = [...g.messages].sort((a, b) => a.id - b.id);
+    $('sessions-focus-messages').innerHTML = ordered.map(m => {
+      const cls = m.proposal_id ? 'proposal' : (m.file_request_id ? 'filereq' : '');
+      return `
+      <div class="row" data-msg-id="${m.id}">
+        <div class="meta">
+          <span>#${m.id}</span>
+          <span class="from">${esc(m.from_peer)}</span>
+          <span>→ ${esc(m.to_peer)}</span>
+          ${m.topic ? `<span class="pill ${cls}">${esc(m.topic)}</span>` : ''}
+          <span>${fmtTs(m.created_at)}</span>
+          ${m.read_at ? `<span title="read at ${esc(m.read_at)}">· read</span>` : '<span style="color:var(--warn)">· unread</span>'}
+          ${m.end_turn ? '<span style="color:var(--ok)" title="sender set end_turn=true">· ✓ turn end</span>' : '<span style="color:var(--muted)">· (no end_turn)</span>'}
+        </div>
+        <div class="md">${m.content_html || `<pre>${esc(m.content)}</pre>`}</div>
+      </div>`;
+    }).join('');
+    restoreCodeblockState();
+    const participants = [...g.participants].sort().join(', ');
+    $('sessions-focus-meta').textContent = `${g.messages.length} message${g.messages.length===1?'':'s'} · ${participants}`;
+  }
+  // Refresh recipient dropdown: peers minus admin (if present); preserve selection.
+  const sel = $('sessions-send-to');
+  const others = peers.filter(p => p.id !== adminPeerName).map(p => p.id);
+  // Suggest the most recently active non-admin participant in this session.
+  let suggested = null;
+  if (g) {
+    const nonAdmin = [...g.messages].reverse().find(m => m.from_peer && m.from_peer !== adminPeerName);
+    if (nonAdmin) suggested = nonAdmin.from_peer;
+  }
+  const cur = sel.value;
+  sel.innerHTML = others.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  else if (suggested && [...sel.options].some(o => o.value === suggested)) sel.value = suggested;
+}
+
+function openSession(topicKey) {
+  activeSessionTopic = topicKey === '__none__' ? null : topicKey;
+  refresh();
+}
+function closeSession() {
+  activeSessionTopic = undefined;
+  refresh();
 }
 
 function renderMessages(msgs) {
@@ -1443,6 +1649,15 @@ document.addEventListener('click', async (e) => {
       limits[key] += PAGE;
       refresh();
     }
+    return;
+  }
+  const sessionRow = e.target.closest('.session-row[data-topic]');
+  if (sessionRow) {
+    openSession(sessionRow.dataset.topic);
+    return;
+  }
+  if (e.target.id === 'sessions-back') {
+    closeSession();
     return;
   }
   const btn = e.target.closest('button[data-act]');
@@ -1629,6 +1844,7 @@ async def api_status(request: Request) -> JSONResponse:
             "peer_count": len(_PEER_CACHE),
             "max_content_bytes": MAX_CONTENT_BYTES,
             "version": BRIDGE_VERSION,
+            "admin_peer_name": ADMIN_PEER_NAME,
         }
     )
 
@@ -1808,6 +2024,60 @@ async def api_admin_generate_token(request: Request) -> Response:
     if (err := require_admin(request)):
         return err
     return JSONResponse({"token": secrets.token_hex(32)})
+
+
+@mcp.custom_route("/api/admin/messages", methods=["POST"])
+async def api_admin_send_message(request: Request) -> Response:
+    """Post a message from the human admin into the bridge.
+
+    Sender is fixed to ADMIN_PEER_NAME (default 'admin'); not a registered
+    peer, has no MCP token. Body: {to, content, topic?, end_turn?}.
+    """
+    if (err := require_admin(request)):
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected a json object"}, status_code=400)
+    payload = cast("dict[str, Any]", body)
+    to = (payload.get("to") or "").strip() if isinstance(payload.get("to"), str) else ""
+    content = payload.get("content") if isinstance(payload.get("content"), str) else ""
+    topic_in = payload.get("topic")
+    topic = topic_in.strip() if isinstance(topic_in, str) and topic_in.strip() else None
+    end_turn = bool(payload.get("end_turn"))
+    if not to:
+        return JSONResponse({"error": "missing 'to' (target peer id)"}, status_code=400)
+    if not content:
+        return JSONResponse({"error": "missing 'content'"}, status_code=400)
+    if len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
+        return JSONResponse({"error": "content exceeds size cap"}, status_code=400)
+    created_at = now_iso()
+    with db() as c:
+        cur = c.execute(
+            "INSERT INTO messages(from_peer, to_peer, topic, content, created_at, end_turn) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            (ADMIN_PEER_NAME, to, topic, content, created_at, 1 if end_turn else 0),
+        )
+        new_id = _new_id(cur)
+        # Touch the admin sender so it shows up in list_peers' last-seen view.
+        c.execute(
+            "INSERT INTO peers(id, last_seen) VALUES(?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET last_seen = excluded.last_seen",
+            (ADMIN_PEER_NAME, created_at),
+        )
+    broadcast_event("message_added", {"id": new_id, "from": ADMIN_PEER_NAME, "to": to})
+    return JSONResponse(
+        {
+            "id": new_id,
+            "from": ADMIN_PEER_NAME,
+            "to": to,
+            "topic": topic,
+            "created_at": created_at,
+            "end_turn": end_turn,
+        }
+    )
 
 
 if __name__ == "__main__":
