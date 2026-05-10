@@ -1056,12 +1056,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .session-row .session-meta { color: var(--muted); font-size: 0.86rem; display: flex; gap: 14px; flex-wrap: wrap; }
   .session-row .session-meta .unread { color: var(--warn); font-weight: 600; }
   .session-row .session-meta .participants { color: var(--accent); }
-
-  .session-focus-header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
-  .session-focus-header h2 { margin: 0; font-size: 1.2rem; color: var(--accent); }
-  .session-focus-header .session-meta { color: var(--muted); font-size: 0.86rem; }
-  .link-button { background: transparent; border: 0; color: var(--muted); cursor: pointer; padding: 0; font-size: 0.93rem; }
-  .link-button:hover { color: var(--fg); }
+  .session-row.active { border-color: var(--accent); background: var(--input-bg); }
 
   .session-send-form { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--input-bg); }
   .session-send-form .row-line { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
@@ -1184,29 +1179,10 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     <div id="active-session-banner" hidden>
       <span class="banner-label">viewing session:</span>
       <span class="banner-topic" id="active-session-name"></span>
-      <button class="banner-clear" id="active-session-clear" title="clear session filter">× clear</button>
+      <button type="button" class="banner-clear" id="active-session-clear" title="clear session filter">× clear</button>
     </div>
     <section id="view-sessions">
       <div id="sessions-list"></div>
-      <div id="sessions-focus" hidden>
-        <div class="session-focus-header">
-          <button id="sessions-back" class="link-button">← back to sessions</button>
-          <h2 id="sessions-focus-topic"></h2>
-          <span id="sessions-focus-meta" class="session-meta"></span>
-        </div>
-        <div id="sessions-focus-messages"></div>
-        <form id="sessions-send-form" class="session-send-form">
-          <div class="row-line">
-            <label>to: <select id="sessions-send-to"></select></label>
-            <label class="end-turn-label"><input type="checkbox" id="sessions-send-end-turn" checked /> end turn</label>
-          </div>
-          <textarea id="sessions-send-content" placeholder="write a message…" rows="3"></textarea>
-          <div class="row-line">
-            <span id="sessions-send-err" class="form-err"></span>
-            <button type="submit" id="sessions-send-submit">send as <span id="sessions-send-as">admin</span></button>
-          </div>
-        </form>
-      </div>
     </section>
     <section id="view-messages" hidden>
       <div class="filter">
@@ -1215,6 +1191,17 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
         show: <select id="msg-filter"><option value="all">all</option><option value="unread">unread only</option></select>
       </div>
       <div id="messages"></div>
+      <form id="msg-send-form" class="session-send-form" hidden>
+        <div class="row-line">
+          <label>to: <select id="msg-send-to"></select></label>
+          <label class="end-turn-label"><input type="checkbox" id="msg-send-end-turn" checked /> end turn</label>
+        </div>
+        <textarea id="msg-send-content" placeholder="write a message…" rows="3"></textarea>
+        <div class="row-line">
+          <span id="msg-send-err" class="form-err"></span>
+          <button type="submit" id="msg-send-submit">send as <span id="msg-send-as">admin</span></button>
+        </div>
+      </form>
     </section>
     <section id="view-proposals" hidden>
       <div class="filter">status: <select id="prop-filter"><option value="all">all</option><option value="pending">pending</option><option value="applied">applied</option><option value="rejected">rejected</option><option value="withdrawn">withdrawn</option></select></div>
@@ -1336,37 +1323,46 @@ $('msg-topic-filter').onchange = () => {
 $('prop-filter').onchange = refresh;
 $('freq-filter').onchange = refresh;
 
-$('sessions-send-form').onsubmit = async (e) => {
-  e.preventDefault();
-  const errEl = $('sessions-send-err');
-  errEl.textContent = '';
-  const submit = $('sessions-send-submit');
-  const to = $('sessions-send-to').value;
-  const content = $('sessions-send-content').value.trim();
-  const endTurn = $('sessions-send-end-turn').checked;
-  if (!to) { errEl.textContent = 'pick a recipient'; return; }
-  if (!content) { errEl.textContent = 'message body is empty'; return; }
-  // Use the focused session's topic; null for the (no topic) bucket.
-  const topic = (activeSessionTopic === null || activeSessionTopic === undefined) ? null : activeSessionTopic;
-  submit.disabled = true;
-  try {
-    const r = await api('/api/admin/messages', {
-      method: 'POST',
-      body: JSON.stringify({ to, content, topic, end_turn: endTurn }),
-    });
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}));
-      errEl.textContent = j.error || ('error: ' + r.status);
-      return;
+// Two parallel send forms (sessions tab focus + messages tab) share the
+// same admin POST. The prefix wires up which DOM ids to read from.
+function wireSendForm(prefix) {
+  const formId = prefix + '-send-form';
+  const form = $(formId);
+  if (!form) return;
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const errEl = $(prefix + '-send-err');
+    errEl.textContent = '';
+    const submit = $(prefix + '-send-submit');
+    const to = $(prefix + '-send-to').value;
+    const content = $(prefix + '-send-content').value.trim();
+    const endTurn = $(prefix + '-send-end-turn').checked;
+    if (!to) { errEl.textContent = 'pick a recipient'; return; }
+    if (!content) { errEl.textContent = 'message body is empty'; return; }
+    // Use the focused session's topic; null for the (no topic) bucket.
+    const topic = (activeSessionTopic === null || activeSessionTopic === undefined) ? null : activeSessionTopic;
+    submit.disabled = true;
+    try {
+      const r = await api('/api/admin/messages', {
+        method: 'POST',
+        body: JSON.stringify({ to, content, topic, end_turn: endTurn }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        errEl.textContent = j.error || ('error: ' + r.status);
+        return;
+      }
+      $(prefix + '-send-content').value = '';
+      // SSE message_added broadcast will trigger the visual refresh.
+    } catch (err) {
+      errEl.textContent = 'send failed: ' + err;
+    } finally {
+      submit.disabled = false;
     }
-    $('sessions-send-content').value = '';
-    // Don't refresh manually; the SSE message_added broadcast will trigger it.
-  } catch (err) {
-    errEl.textContent = 'send failed: ' + err;
-  } finally {
-    submit.disabled = false;
-  }
-};
+  };
+}
+
+wireSendForm('msg');
 
 $('gen-token').onclick = async () => {
   const r = await api('/api/admin/generate_token', { method: 'POST' });
@@ -1434,8 +1430,6 @@ function renderStatus(s) {
   if (v) v.textContent = s.version || '';
   if (s.admin_peer_name) {
     adminPeerName = s.admin_peer_name;
-    const lbl = $('sessions-send-as');
-    if (lbl) lbl.textContent = adminPeerName;
   }
 }
 
@@ -1476,6 +1470,46 @@ let adminPeerName = 'admin';
 function sessionKey(t) { return t === null || t === undefined ? '__none__' : t; }
 function sessionLabel(t) { return t ? t : '(no topic)'; }
 
+function refreshMsgSendForm(msgs) {
+  const form = $('msg-send-form');
+  if (!form) return;
+  // Only useful when scoped to a session (we use that session's topic).
+  if (activeSessionTopic === undefined) {
+    form.hidden = true;
+    return;
+  }
+  form.hidden = false;
+  $('msg-send-as').textContent = adminPeerName;
+  // Populate recipient dropdown from the participants of this session,
+  // falling back to all peers if none yet.
+  const sel = $('msg-send-to');
+  const inSession = msgs.filter(m =>
+    activeSessionTopic === null ? !m.topic : m.topic === activeSessionTopic
+  );
+  const participants = new Set();
+  for (const m of inSession) {
+    if (m.from_peer && m.from_peer !== adminPeerName) participants.add(m.from_peer);
+    if (m.to_peer && m.to_peer !== adminPeerName) participants.add(m.to_peer);
+  }
+  let recipients = [...participants].sort();
+  if (recipients.length === 0) {
+    // No participants yet (empty session) — fall back to known peers.
+    recipients = [...new Set(msgs.flatMap(m => [m.from_peer, m.to_peer]).filter(p => p && p !== adminPeerName))].sort();
+  }
+  // Suggest the most recent non-admin participant in this session.
+  let suggested = null;
+  for (let i = inSession.length - 1; i >= 0; i--) {
+    if (inSession[i].from_peer && inSession[i].from_peer !== adminPeerName) {
+      suggested = inSession[i].from_peer;
+      break;
+    }
+  }
+  const cur = sel.value;
+  sel.innerHTML = recipients.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  else if (suggested && [...sel.options].some(o => o.value === suggested)) sel.value = suggested;
+}
+
 function renderActiveSessionBanner() {
   const banner = $('active-session-banner');
   if (!banner) return;
@@ -1495,9 +1529,10 @@ function activeSessionMatches(item) {
   return item.topic === activeSessionTopic;
 }
 
-function renderSessions(msgs, peers) {
-  // Group messages by topic. Each session aggregates: count, unread count,
-  // participants (peer ids who appear as from or to), latest message.
+function renderSessions(msgs, _peers) {
+  // Sessions tab is just the list. Clicking a row pushes you to the
+  // messages tab with the active session set, where the actual
+  // conversation reading + reply form lives.
   const groups = new Map();
   for (const m of msgs) {
     const k = sessionKey(m.topic);
@@ -1512,28 +1547,20 @@ function renderSessions(msgs, peers) {
     if (!m.read_at) g.unread += 1;
     if (!g.latest || m.id > g.latest.id) g.latest = m;
   }
-  if (activeSessionTopic === undefined) {
-    renderSessionsList(groups);
-  } else {
-    renderSessionFocus(activeSessionTopic, groups, peers);
-  }
-}
-
-function renderSessionsList(groups) {
-  $('sessions-focus').hidden = true;
-  $('sessions-list').hidden = false;
+  const list = $('sessions-list');
+  if (!list) return;
   if (!groups.size) {
-    $('sessions-list').innerHTML = '<div class="empty">no sessions yet — once an agent sends a message with a topic, it shows up here</div>';
+    list.innerHTML = '<div class="empty">no sessions yet — once an agent sends a message with a topic, it shows up here</div>';
     return;
   }
-  // Sort by latest message id desc
   const ordered = [...groups.values()].sort((a, b) => b.latest.id - a.latest.id);
-  $('sessions-list').innerHTML = ordered.map(g => {
+  list.innerHTML = ordered.map(g => {
     const topicCls = g.topic ? '' : ' empty-topic';
     const preview = (g.latest.content || '').replace(/\\s+/g, ' ').slice(0, 200);
     const participants = [...g.participants].sort().join(', ');
+    const isActive = (activeSessionTopic !== undefined) && (sessionKey(g.topic) === sessionKey(activeSessionTopic));
     return `
-      <div class="session-row" data-topic="${esc(sessionKey(g.topic))}">
+      <div class="session-row${isActive ? ' active' : ''}" data-topic="${esc(sessionKey(g.topic))}">
         <div class="session-topic${topicCls}">${esc(sessionLabel(g.topic))}</div>
         <div class="session-preview"><span class="from">${esc(g.latest.from_peer)}</span>: ${esc(preview)}</div>
         <div class="session-meta">
@@ -1546,54 +1573,13 @@ function renderSessionsList(groups) {
   }).join('');
 }
 
-function renderSessionFocus(topicKey, groups, peers) {
-  $('sessions-list').hidden = true;
-  $('sessions-focus').hidden = false;
-  const g = groups.get(topicKey === null ? '__none__' : topicKey);
-  $('sessions-focus-topic').textContent = sessionLabel(topicKey);
-  if (!g) {
-    $('sessions-focus-messages').innerHTML = '<div class="empty">no messages in this session yet</div>';
-    $('sessions-focus-meta').textContent = '';
-  } else {
-    const ordered = [...g.messages].sort((a, b) => a.id - b.id);
-    $('sessions-focus-messages').innerHTML = ordered.map(m => {
-      const cls = m.proposal_id ? 'proposal' : (m.file_request_id ? 'filereq' : '');
-      return `
-      <div class="row" data-msg-id="${m.id}">
-        <div class="meta">
-          <span>#${m.id}</span>
-          <span class="from">${esc(m.from_peer)}</span>
-          <span>→ ${esc(m.to_peer)}</span>
-          ${m.topic ? `<span class="pill ${cls}">${esc(m.topic)}</span>` : ''}
-          <span>${fmtTs(m.created_at)}</span>
-          ${m.read_at ? `<span title="read at ${esc(m.read_at)}">· read</span>` : '<span style="color:var(--warn)">· unread</span>'}
-          ${m.end_turn ? '<span style="color:var(--ok)" title="sender set end_turn=true">· ✓ turn end</span>' : '<span style="color:var(--muted)">· (no end_turn)</span>'}
-        </div>
-        <div class="md">${m.content_html || `<pre>${esc(m.content)}</pre>`}</div>
-      </div>`;
-    }).join('');
-    restoreCodeblockState();
-    const participants = [...g.participants].sort().join(', ');
-    $('sessions-focus-meta').textContent = `${g.messages.length} message${g.messages.length===1?'':'s'} · ${participants}`;
-  }
-  // Refresh recipient dropdown: peers minus admin (if present); preserve selection.
-  const sel = $('sessions-send-to');
-  const others = peers.filter(p => p.id !== adminPeerName).map(p => p.id);
-  // Suggest the most recently active non-admin participant in this session.
-  let suggested = null;
-  if (g) {
-    const nonAdmin = [...g.messages].reverse().find(m => m.from_peer && m.from_peer !== adminPeerName);
-    if (nonAdmin) suggested = nonAdmin.from_peer;
-  }
-  const cur = sel.value;
-  sel.innerHTML = others.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
-  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
-  else if (suggested && [...sel.options].some(o => o.value === suggested)) sel.value = suggested;
-}
-
 function openSession(topicKey) {
   activeSessionTopic = topicKey === '__none__' ? null : topicKey;
-  refresh();
+  // Clicking a session is "open this conversation" — push the user to
+  // the messages tab where the reading + reply form live. switchTab
+  // calls refresh() itself, so no separate refresh needed here.
+  if (activeTab !== 'messages') switchTab('messages');
+  else refresh();
 }
 function closeSession() {
   activeSessionTopic = undefined;
@@ -1602,6 +1588,7 @@ function closeSession() {
 
 function renderMessages(msgs) {
   refreshTopicOptions(msgs);
+  refreshMsgSendForm(msgs);
   const filter = $('msg-filter').value;
   const topic = $('msg-topic-filter').value;
   let filtered = filter === 'unread' ? msgs.filter(m => !m.read_at) : msgs;
@@ -1725,7 +1712,9 @@ document.addEventListener('click', async (e) => {
     openSession(sessionRow.dataset.topic);
     return;
   }
-  if (e.target.id === 'sessions-back' || e.target.id === 'active-session-clear') {
+  // .closest() so the handler also fires when the click lands on
+  // anything inside the clear button (whitespace, child icon, etc.).
+  if (e.target.closest('#active-session-clear')) {
     closeSession();
     return;
   }
