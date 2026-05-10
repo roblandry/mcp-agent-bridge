@@ -391,6 +391,11 @@ Turn-taking
       Wait at least 15 seconds and re-poll.
 - The bridge will not prevent you from acting on a partial turn, but doing
   so is a protocol violation that confuses the other peer.
+- Use a distinct `topic` per ongoing collaboration. The `turns` summary is
+  keyed by (topic, from-peer), so parallel sessions stay independent and
+  the human reviewer can filter the web UI to one thread at a time. Pick a
+  short stable name when you start a new collab (e.g.
+  `topic="phase-b-rollout"`) and use it on every related `send_message`.
 
 Polling and presence
 --------------------
@@ -996,7 +1001,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   nav button.active { color: var(--fg); border-bottom: 2px solid var(--accent); }
   main { padding: 12px 18px; max-width: 1100px; margin: 0 auto; }
   .empty { color: var(--muted); padding: 20px 0; text-align: center; }
-  .row { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; padding: 10px 14px; }
+  .row { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 20px; padding: 20px; }
   .row .meta { color: var(--muted); font-size: 0.86rem; display: flex; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
   .row .meta .from { color: var(--accent); }
   .row pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0 0 0; font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
@@ -1105,7 +1110,11 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   </div>
   <main>
     <section id="view-messages">
-      <div class="filter">show: <select id="msg-filter"><option value="all">all</option><option value="unread">unread only</option></select></div>
+      <div class="filter">
+        topic: <select id="msg-topic-filter"><option value="all">all topics</option></select>
+        &nbsp;·&nbsp;
+        show: <select id="msg-filter"><option value="all">all</option><option value="unread">unread only</option></select>
+      </div>
       <div id="messages"></div>
     </section>
     <section id="view-proposals" hidden>
@@ -1221,6 +1230,10 @@ function switchTab(t) {
   refresh();
 }
 $('msg-filter').onchange = refresh;
+$('msg-topic-filter').onchange = () => {
+  localStorage.setItem(TOPIC_FILTER_KEY, $('msg-topic-filter').value);
+  refresh();
+};
 $('prop-filter').onchange = refresh;
 $('freq-filter').onchange = refresh;
 
@@ -1295,9 +1308,35 @@ function renderPeers(peers) {
   ).join('');
 }
 
+const TOPIC_FILTER_KEY = 'agent-bridge:msg-topic-filter';
+
+function refreshTopicOptions(msgs) {
+  const sel = $('msg-topic-filter');
+  if (!sel) return;
+  const topics = new Set();
+  let sawNoTopic = false;
+  for (const m of msgs) {
+    if (m.topic) topics.add(m.topic);
+    else sawNoTopic = true;
+  }
+  const desired = sel.value || localStorage.getItem(TOPIC_FILTER_KEY) || 'all';
+  let opts = '<option value="all">all topics</option>';
+  if (sawNoTopic) opts += '<option value="__none__">(no topic)</option>';
+  for (const t of [...topics].sort()) {
+    opts += `<option value="${esc(t)}">${esc(t)} (${msgs.filter(m => m.topic === t).length})</option>`;
+  }
+  sel.innerHTML = opts;
+  // Restore selection if the option still exists; otherwise fall back to "all".
+  sel.value = [...sel.options].some(o => o.value === desired) ? desired : 'all';
+}
+
 function renderMessages(msgs) {
+  refreshTopicOptions(msgs);
   const filter = $('msg-filter').value;
-  const filtered = filter === 'unread' ? msgs.filter(m => !m.read_at) : msgs;
+  const topic = $('msg-topic-filter').value;
+  let filtered = filter === 'unread' ? msgs.filter(m => !m.read_at) : msgs;
+  if (topic === '__none__') filtered = filtered.filter(m => !m.topic);
+  else if (topic !== 'all') filtered = filtered.filter(m => m.topic === topic);
   if (!filtered.length) { $('messages').innerHTML = '<div class="empty">no messages</div>'; return; }
   const { visible, hidden } = paginate(filtered, 'messages');
   const header = moreLink('messages', hidden, 'message');
