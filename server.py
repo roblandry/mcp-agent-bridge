@@ -1466,7 +1466,7 @@ function renderSessionsList(groups) {
   const ordered = [...groups.values()].sort((a, b) => b.latest.id - a.latest.id);
   $('sessions-list').innerHTML = ordered.map(g => {
     const topicCls = g.topic ? '' : ' empty-topic';
-    const preview = (g.latest.content || '').replace(/\n+/g, ' ').slice(0, 200);
+    const preview = (g.latest.content || '').replace(/\\s+/g, ' ').slice(0, 200);
     const participants = [...g.participants].sort().join(', ');
     return `
       <div class="session-row" data-topic="${esc(sessionKey(g.topic))}">
