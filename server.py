@@ -226,7 +226,8 @@ def init_db() -> None:
               created_at TEXT NOT NULL,
               resolved_at TEXT,
               resolved_by TEXT,
-              resolution_note TEXT
+              resolution_note TEXT,
+              topic TEXT
             );
             CREATE TABLE IF NOT EXISTS file_requests (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,13 +240,20 @@ def init_db() -> None:
               created_at TEXT NOT NULL,
               resolved_at TEXT,
               resolved_by TEXT,
-              resolution_note TEXT
+              resolution_note TEXT,
+              topic TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_peer, read_at);
             CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status, target_peer);
             CREATE INDEX IF NOT EXISTS idx_file_requests_status ON file_requests(status, target_peer);
             """
         )
+        # idempotent migrations (the bridge is deployed; we may be opening
+        # a db that pre-dates a column add).
+        for table in ("proposals", "file_requests"):
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if "topic" not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN topic TEXT")
 
 
 @contextmanager
@@ -422,6 +430,12 @@ Workflow
 - To read a file the other peer owns, use `request_file`. Only the target
   peer can `resolve_file_request(status="fulfilled", content=...)`. Do not
   read from a peer-owned path yourself.
+- **Pass `topic=` to `propose_edit` and `request_file`** — same topic
+  string you've been using in `send_message` for this collab. The
+  proposal / request and its auto-notification message all land in that
+  session, so the human reviewer sees them together when they filter the
+  web UI to that session. Omitting `topic` puts the auto-notification in
+  a per-artifact sub-topic (`proposal:<id>` / `file_req:<id>`) instead.
 - `list_proposals` and `list_file_requests` are metadata-only catalogs —
   use the matching `get_*` tool to fetch bodies.
 
@@ -604,6 +618,7 @@ def propose_edit(
     summary: str,
     content: str,
     target_peer: str,
+    topic: Optional[str] = None,
 ) -> dict[str, Any]:
     """Propose an edit to a file. Only the target peer can apply it.
 
@@ -612,16 +627,22 @@ def propose_edit(
         summary: one-line description.
         content: proposed new full content. Limit: 5MB.
         target_peer: peer_id who owns the file.
+        topic: optional collaboration topic (e.g. "phase-b-rollout"). Pass the
+            same topic you've been using in `send_message` so the proposal
+            shows up inside that session in the human-facing web UI. If
+            omitted, the auto-notification message lands in a per-proposal
+            sub-topic instead.
     """
     sender = caller_peer()
     touch_peer(sender)
     _check_size(content, "content")
     created_at = now_iso()
+    msg_topic = topic if topic else None
     with db() as c:
         cur = c.execute(
-            "INSERT INTO proposals(from_peer, target_peer, file_path, summary, content_size, status, created_at) "
-            "VALUES(?, ?, ?, ?, 0, 'pending', ?)",
-            (sender, target_peer, file_path, summary, created_at),
+            "INSERT INTO proposals(from_peer, target_peer, file_path, summary, content_size, status, created_at, topic) "
+            "VALUES(?, ?, ?, ?, 0, 'pending', ?, ?)",
+            (sender, target_peer, file_path, summary, created_at, msg_topic),
         )
         proposal_id = _new_id(cur)
         size = _write_payload("proposal", proposal_id, content)
@@ -635,10 +656,11 @@ def propose_edit(
             f"After applying (or deciding not to), call resolve_proposal({proposal_id}, "
             f"status='applied'|'rejected', note='...')."
         )
+        notify_topic = msg_topic if msg_topic else f"proposal:{proposal_id}"
         c.execute(
             "INSERT INTO messages(from_peer, to_peer, topic, content, created_at, proposal_id) "
             "VALUES(?, ?, ?, ?, ?, ?)",
-            (sender, target_peer, f"proposal:{proposal_id}", notify, created_at, proposal_id),
+            (sender, target_peer, notify_topic, notify, created_at, proposal_id),
         )
     broadcast_event("proposal_added", {"id": proposal_id, "from": sender, "target": target_peer})
     return {
@@ -650,6 +672,7 @@ def propose_edit(
         "content_size": size,
         "status": "pending",
         "created_at": created_at,
+        "topic": msg_topic,
     }
 
 
@@ -665,7 +688,7 @@ def list_proposals(status: Optional[str] = None, mine_only: bool = False) -> lis
     touch_peer(me)
     query = (
         "SELECT id, from_peer, target_peer, file_path, summary, content_size, status, "
-        "created_at, resolved_at, resolved_by, resolution_note FROM proposals"
+        "created_at, resolved_at, resolved_by, resolution_note, topic FROM proposals"
     )
     clauses: list[str] = []
     args: list[Any] = []
@@ -756,6 +779,7 @@ def request_file(
     file_path: str,
     target_peer: str,
     reason: Optional[str] = None,
+    topic: Optional[str] = None,
 ) -> dict[str, Any]:
     """Ask another peer to send you the contents of a file.
 
@@ -763,15 +787,21 @@ def request_file(
         file_path: absolute path of the file (as seen by target_peer).
         target_peer: peer_id who owns the file.
         reason: optional context — why you want it.
+        topic: optional collaboration topic (e.g. "phase-b-rollout"). Pass the
+            same topic you've been using in `send_message` so the request
+            shows up inside that session in the human-facing web UI. If
+            omitted, the auto-notification message lands in a per-request
+            sub-topic instead.
     """
     sender = caller_peer()
     touch_peer(sender)
     created_at = now_iso()
+    msg_topic = topic if topic else None
     with db() as c:
         cur = c.execute(
-            "INSERT INTO file_requests(from_peer, target_peer, file_path, reason, status, created_at) "
-            "VALUES(?, ?, ?, ?, 'pending', ?)",
-            (sender, target_peer, file_path, reason, created_at),
+            "INSERT INTO file_requests(from_peer, target_peer, file_path, reason, status, created_at, topic) "
+            "VALUES(?, ?, ?, ?, 'pending', ?, ?)",
+            (sender, target_peer, file_path, reason, created_at, msg_topic),
         )
         request_id = _new_id(cur)
         notify = (
@@ -782,10 +812,11 @@ def request_file(
             f"resolve_file_request({request_id}, status='fulfilled', content='...'). "
             f"To refuse, call resolve_file_request({request_id}, status='denied', note='...')."
         )
+        notify_topic = msg_topic if msg_topic else f"file_req:{request_id}"
         c.execute(
             "INSERT INTO messages(from_peer, to_peer, topic, content, created_at, file_request_id) "
             "VALUES(?, ?, ?, ?, ?, ?)",
-            (sender, target_peer, f"file_req:{request_id}", notify, created_at, request_id),
+            (sender, target_peer, notify_topic, notify, created_at, request_id),
         )
     broadcast_event("file_request_added", {"id": request_id, "from": sender, "target": target_peer})
     return {
@@ -795,6 +826,7 @@ def request_file(
         "file_path": file_path,
         "status": "pending",
         "created_at": created_at,
+        "topic": msg_topic,
     }
 
 
@@ -805,7 +837,7 @@ def list_file_requests(status: Optional[str] = None, mine_only: bool = False) ->
     touch_peer(me)
     query = (
         "SELECT id, from_peer, target_peer, file_path, reason, status, content_size, "
-        "created_at, resolved_at, resolved_by, resolution_note FROM file_requests"
+        "created_at, resolved_at, resolved_by, resolution_note, topic FROM file_requests"
     )
     clauses: list[str] = []
     args: list[Any] = []
@@ -1008,6 +1040,13 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .empty a.show-more:hover { border-color: var(--accent); background: var(--input-bg); }
   .row { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 20px; padding: 20px; }
 
+  /* active-session banner (shown across all tabs when a session is focused) */
+  #active-session-banner { display: flex; align-items: center; gap: 12px; padding: 10px 16px; margin-bottom: 14px; background: var(--input-bg); border: 1px solid var(--accent); border-radius: 6px; }
+  #active-session-banner .banner-label { color: var(--muted); font-size: 0.86rem; }
+  #active-session-banner .banner-topic { color: var(--accent); font-weight: 600; flex: 1; }
+  #active-session-banner .banner-clear { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 4px; padding: 3px 10px; cursor: pointer; font-size: 0.86rem; }
+  #active-session-banner .banner-clear:hover { color: var(--err); border-color: var(--err); }
+
   /* sessions tab */
   .session-row { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 14px; padding: 14px 18px; cursor: pointer; transition: border-color 0.1s, background 0.1s; }
   .session-row:hover { border-color: var(--accent); background: var(--input-bg); }
@@ -1142,6 +1181,11 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     </nav>
   </div>
   <main>
+    <div id="active-session-banner" hidden>
+      <span class="banner-label">viewing session:</span>
+      <span class="banner-topic" id="active-session-name"></span>
+      <button class="banner-clear" id="active-session-clear" title="clear session filter">× clear</button>
+    </div>
     <section id="view-sessions">
       <div id="sessions-list"></div>
       <div id="sessions-focus" hidden>
@@ -1374,6 +1418,7 @@ async function refresh() {
   ]);
   renderStatus(status);
   renderPeers(peers);
+  renderActiveSessionBanner();
   renderSessions(msgs, peers);
   renderMessages(msgs);
   renderProposals(props);
@@ -1430,6 +1475,25 @@ let adminPeerName = 'admin';
 
 function sessionKey(t) { return t === null || t === undefined ? '__none__' : t; }
 function sessionLabel(t) { return t ? t : '(no topic)'; }
+
+function renderActiveSessionBanner() {
+  const banner = $('active-session-banner');
+  if (!banner) return;
+  if (activeSessionTopic === undefined) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  $('active-session-name').textContent = sessionLabel(activeSessionTopic);
+}
+
+function activeSessionMatches(item) {
+  // True if `item` (message / proposal / file_request) belongs to the
+  // currently focused session. When no session is focused, everything matches.
+  if (activeSessionTopic === undefined) return true;
+  if (activeSessionTopic === null) return !item.topic;
+  return item.topic === activeSessionTopic;
+}
 
 function renderSessions(msgs, peers) {
   // Group messages by topic. Each session aggregates: count, unread count,
@@ -1543,6 +1607,9 @@ function renderMessages(msgs) {
   let filtered = filter === 'unread' ? msgs.filter(m => !m.read_at) : msgs;
   if (topic === '__none__') filtered = filtered.filter(m => !m.topic);
   else if (topic !== 'all') filtered = filtered.filter(m => m.topic === topic);
+  // Active session, set by clicking a row in the sessions tab, overrides
+  // everything else: only items in that topic show across all tabs.
+  filtered = filtered.filter(activeSessionMatches);
   if (!filtered.length) { $('messages').innerHTML = '<div class="empty">no messages</div>'; return; }
   const { visible, hidden } = paginate(filtered, 'messages');
   const header = moreLink('messages', hidden, 'message');
@@ -1567,7 +1634,8 @@ function renderMessages(msgs) {
 
 function renderProposals(props) {
   const filter = $('prop-filter').value;
-  const filtered = filter === 'all' ? props : props.filter(p => p.status === filter);
+  let filtered = filter === 'all' ? props : props.filter(p => p.status === filter);
+  filtered = filtered.filter(activeSessionMatches);
   if (!filtered.length) { $('proposals').innerHTML = '<div class="empty">no proposals</div>'; return; }
   const { visible, hidden } = paginate(filtered, 'proposals');
   const footer = moreLink('proposals', hidden, 'proposal');
@@ -1593,7 +1661,8 @@ function renderProposals(props) {
 
 function renderFileRequests(freqs) {
   const filter = $('freq-filter').value;
-  const filtered = filter === 'all' ? freqs : freqs.filter(f => f.status === filter);
+  let filtered = filter === 'all' ? freqs : freqs.filter(f => f.status === filter);
+  filtered = filtered.filter(activeSessionMatches);
   if (!filtered.length) { $('filereqs').innerHTML = '<div class="empty">no file requests</div>'; return; }
   const { visible, hidden } = paginate(filtered, 'filereqs');
   const footer = moreLink('filereqs', hidden, 'file request');
@@ -1656,7 +1725,7 @@ document.addEventListener('click', async (e) => {
     openSession(sessionRow.dataset.topic);
     return;
   }
-  if (e.target.id === 'sessions-back') {
+  if (e.target.id === 'sessions-back' || e.target.id === 'active-session-clear') {
     closeSession();
     return;
   }
