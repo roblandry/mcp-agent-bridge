@@ -1058,6 +1058,11 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .session-row .session-meta .participants { color: var(--accent); }
   .session-row.active { border-color: var(--accent); background: var(--input-bg); }
 
+  .link-button { background: transparent; border: 0; color: var(--accent); cursor: pointer; padding: 0; font-size: 0.86rem; text-decoration: underline; }
+  .link-button:hover { color: var(--fg); }
+  .row .meta button.mark-read { background: transparent; border: 1px solid var(--border); color: var(--accent); border-radius: 3px; padding: 1px 8px; cursor: pointer; font-size: 0.79rem; margin-left: 4px; }
+  .row .meta button.mark-read:hover { border-color: var(--accent); background: var(--input-bg); }
+
   .session-send-form { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--input-bg); }
   .session-send-form .row-line { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
   .session-send-form .row-line:last-child { margin-bottom: 0; }
@@ -1179,16 +1184,23 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
     <div id="active-session-banner" hidden>
       <span class="banner-label">viewing session:</span>
       <span class="banner-topic" id="active-session-name"></span>
-      <button type="button" class="banner-clear" id="active-session-clear" title="clear session filter">× clear</button>
+      <button type="button" class="banner-clear" id="active-session-back" title="clear filter and go back to sessions">← back to sessions</button>
     </div>
     <section id="view-sessions">
       <div id="sessions-list"></div>
     </section>
     <section id="view-messages" hidden>
       <div class="filter">
-        topic: <select id="msg-topic-filter"><option value="all">all topics</option></select>
-        &nbsp;·&nbsp;
         show: <select id="msg-filter"><option value="all">all</option><option value="unread">unread only</option></select>
+        &nbsp;·&nbsp;
+        page size: <select id="page-size">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+        &nbsp;·&nbsp;
+        <button type="button" id="msg-mark-all-read" class="link-button" hidden>mark all my unread as read</button>
       </div>
       <div id="messages"></div>
       <form id="msg-send-form" class="session-send-form" hidden>
@@ -1286,7 +1298,9 @@ $('logout').onclick = () => { clearToken(); showLogin(); };
 
 let activeTab = 'sessions';
 
-const PAGE = 50;
+const PAGE_SIZE_KEY = 'agent-bridge:page-size';
+let PAGE = parseInt(localStorage.getItem(PAGE_SIZE_KEY) || '50', 10);
+if (![25, 50, 100, 200].includes(PAGE)) PAGE = 50;
 const limits = { messages: PAGE, proposals: PAGE, filereqs: PAGE };
 
 function paginate(arr, key) {
@@ -1316,12 +1330,26 @@ function switchTab(t) {
   refresh();
 }
 $('msg-filter').onchange = refresh;
-$('msg-topic-filter').onchange = () => {
-  localStorage.setItem(TOPIC_FILTER_KEY, $('msg-topic-filter').value);
-  refresh();
-};
 $('prop-filter').onchange = refresh;
 $('freq-filter').onchange = refresh;
+$('msg-mark-all-read').onclick = async () => {
+  await api('/api/admin/messages/mark_read', { method: 'POST', body: JSON.stringify({ all: true }) });
+  // SSE messages_read broadcast triggers refresh.
+};
+
+// Page-size selector. Persisted in localStorage; resets all per-tab limits
+// to the new value so the visible chunk matches the user's expectation.
+$('page-size').value = String(PAGE);
+$('page-size').onchange = () => {
+  const next = parseInt($('page-size').value, 10);
+  if (isNaN(next)) return;
+  PAGE = next;
+  limits.messages = next;
+  limits.proposals = next;
+  limits.filereqs = next;
+  localStorage.setItem(PAGE_SIZE_KEY, String(next));
+  refresh();
+};
 
 // Two parallel send forms (sessions tab focus + messages tab) share the
 // same admin POST. The prefix wires up which DOM ids to read from.
@@ -1404,10 +1432,17 @@ async function refresh() {
   if ($('app-view').hidden) return;
   // The selection-aware deferral lives in scheduleRefresh(); direct callers
   // (login submit, button handlers) intentionally bypass it.
-  const [status, peers, msgs, props, freqs, adminPeers] = await Promise.all([
+  // When a session is focused, fetch the full thread for that topic via
+  // /api/messages?topic=… (the global last-200 window may not include it).
+  // Otherwise fetch the recent global window as before.
+  const msgsUrl = (activeSessionTopic === undefined)
+    ? '/api/messages'
+    : '/api/messages?topic=' + encodeURIComponent(activeSessionTopic === null ? '__none__' : activeSessionTopic);
+  const [status, peers, sessions, msgs, props, freqs, adminPeers] = await Promise.all([
     api('/api/status').then(r=>r.json()).catch(()=>({})),
     api('/api/peers').then(r=>r.json()).catch(()=>[]),
-    api('/api/messages').then(r=>r.json()).catch(()=>[]),
+    api('/api/sessions').then(r=>r.json()).catch(()=>[]),
+    api(msgsUrl).then(r=>r.json()).catch(()=>[]),
     api('/api/proposals').then(r=>r.json()).catch(()=>[]),
     api('/api/file_requests').then(r=>r.json()).catch(()=>[]),
     activeTab === 'admin-peers' ? api('/api/admin/peers').then(r=>r.json()).catch(()=>[]) : Promise.resolve(null),
@@ -1415,7 +1450,7 @@ async function refresh() {
   renderStatus(status);
   renderPeers(peers);
   renderActiveSessionBanner();
-  renderSessions(msgs, peers);
+  renderSessions(sessions);
   renderMessages(msgs);
   renderProposals(props);
   renderFileRequests(freqs);
@@ -1438,28 +1473,6 @@ function renderPeers(peers) {
   $('peers').innerHTML = peers.map(p =>
     `<span class="peer"><span class="peer-id">${esc(p.id)}</span> <span title="${esc(p.last_seen)}">· ${fmtTs(p.last_seen)}</span></span>`
   ).join('');
-}
-
-const TOPIC_FILTER_KEY = 'agent-bridge:msg-topic-filter';
-
-function refreshTopicOptions(msgs) {
-  const sel = $('msg-topic-filter');
-  if (!sel) return;
-  const topics = new Set();
-  let sawNoTopic = false;
-  for (const m of msgs) {
-    if (m.topic) topics.add(m.topic);
-    else sawNoTopic = true;
-  }
-  const desired = sel.value || localStorage.getItem(TOPIC_FILTER_KEY) || 'all';
-  let opts = '<option value="all">all topics</option>';
-  if (sawNoTopic) opts += '<option value="__none__">(no topic)</option>';
-  for (const t of [...topics].sort()) {
-    opts += `<option value="${esc(t)}">${esc(t)} (${msgs.filter(m => m.topic === t).length})</option>`;
-  }
-  sel.innerHTML = opts;
-  // Restore selection if the option still exists; otherwise fall back to "all".
-  sel.value = [...sel.options].some(o => o.value === desired) ? desired : 'all';
 }
 
 // --- sessions tab ---
@@ -1529,45 +1542,29 @@ function activeSessionMatches(item) {
   return item.topic === activeSessionTopic;
 }
 
-function renderSessions(msgs, _peers) {
-  // Sessions tab is just the list. Clicking a row pushes you to the
-  // messages tab with the active session set, where the actual
-  // conversation reading + reply form lives.
-  const groups = new Map();
-  for (const m of msgs) {
-    const k = sessionKey(m.topic);
-    let g = groups.get(k);
-    if (!g) {
-      g = { topic: m.topic, messages: [], unread: 0, participants: new Set(), latest: m };
-      groups.set(k, g);
-    }
-    g.messages.push(m);
-    if (m.from_peer) g.participants.add(m.from_peer);
-    if (m.to_peer) g.participants.add(m.to_peer);
-    if (!m.read_at) g.unread += 1;
-    if (!g.latest || m.id > g.latest.id) g.latest = m;
-  }
+function renderSessions(sessions) {
+  // sessions: aggregated rows from /api/sessions, one per topic across the
+  // entire history (independent of message-list paging).
   const list = $('sessions-list');
   if (!list) return;
-  if (!groups.size) {
+  if (!sessions || !sessions.length) {
     list.innerHTML = '<div class="empty">no sessions yet — once an agent sends a message with a topic, it shows up here</div>';
     return;
   }
-  const ordered = [...groups.values()].sort((a, b) => b.latest.id - a.latest.id);
-  list.innerHTML = ordered.map(g => {
-    const topicCls = g.topic ? '' : ' empty-topic';
-    const preview = (g.latest.content || '').replace(/\\s+/g, ' ').slice(0, 200);
-    const participants = [...g.participants].sort().join(', ');
-    const isActive = (activeSessionTopic !== undefined) && (sessionKey(g.topic) === sessionKey(activeSessionTopic));
+  list.innerHTML = sessions.map(s => {
+    const topicCls = s.topic ? '' : ' empty-topic';
+    const preview = (s.latest_content || '').replace(/\\s+/g, ' ').slice(0, 200);
+    const participants = (s.participants || []).join(', ');
+    const isActive = (activeSessionTopic !== undefined) && (sessionKey(s.topic) === sessionKey(activeSessionTopic));
     return `
-      <div class="session-row${isActive ? ' active' : ''}" data-topic="${esc(sessionKey(g.topic))}">
-        <div class="session-topic${topicCls}">${esc(sessionLabel(g.topic))}</div>
-        <div class="session-preview"><span class="from">${esc(g.latest.from_peer)}</span>: ${esc(preview)}</div>
+      <div class="session-row${isActive ? ' active' : ''}" data-topic="${esc(sessionKey(s.topic))}">
+        <div class="session-topic${topicCls}">${esc(sessionLabel(s.topic))}</div>
+        <div class="session-preview"><span class="from">${esc(s.latest_from || '')}</span>: ${esc(preview)}</div>
         <div class="session-meta">
-          <span>${g.messages.length} message${g.messages.length===1?'':'s'}</span>
-          ${g.unread ? `<span class="unread">${g.unread} unread</span>` : ''}
+          <span>${s.message_count} message${s.message_count===1?'':'s'}</span>
+          ${s.unread ? `<span class="unread">${s.unread} unread</span>` : ''}
           <span class="participants">${esc(participants)}</span>
-          <span>· last: ${fmtTs(g.latest.created_at)}</span>
+          <span>· last: ${fmtTs(s.latest_created_at)}</span>
         </div>
       </div>`;
   }).join('');
@@ -1587,21 +1584,25 @@ function closeSession() {
 }
 
 function renderMessages(msgs) {
-  refreshTopicOptions(msgs);
   refreshMsgSendForm(msgs);
   const filter = $('msg-filter').value;
-  const topic = $('msg-topic-filter').value;
   let filtered = filter === 'unread' ? msgs.filter(m => !m.read_at) : msgs;
-  if (topic === '__none__') filtered = filtered.filter(m => !m.topic);
-  else if (topic !== 'all') filtered = filtered.filter(m => m.topic === topic);
-  // Active session, set by clicking a row in the sessions tab, overrides
-  // everything else: only items in that topic show across all tabs.
+  // Note: when activeSessionTopic is set, the server already filtered by
+  // topic via /api/messages?topic=…, so this is a no-op then. It only
+  // matters for the "no active session" view, which it (correctly) leaves
+  // alone.
   filtered = filtered.filter(activeSessionMatches);
+  // Show or hide the "mark all my unread as read" bulk button based on
+  // whether any admin-bound unread messages are visible.
+  const adminUnread = filtered.filter(m => m.to_peer === adminPeerName && !m.read_at);
+  const bulk = $('msg-mark-all-read');
+  if (bulk) bulk.hidden = adminUnread.length === 0;
   if (!filtered.length) { $('messages').innerHTML = '<div class="empty">no messages</div>'; return; }
   const { visible, hidden } = paginate(filtered, 'messages');
   const header = moreLink('messages', hidden, 'message');
   $('messages').innerHTML = header + visible.map(m => {
     const cls = m.proposal_id ? 'proposal' : (m.file_request_id ? 'filereq' : '');
+    const canMark = (m.to_peer === adminPeerName) && !m.read_at;
     return `
     <div class="row" data-msg-id="${m.id}">
       <div class="meta">
@@ -1611,6 +1612,7 @@ function renderMessages(msgs) {
         ${m.topic ? `<span class="pill ${cls}">${esc(m.topic)}</span>` : ''}
         <span>${fmtTs(m.created_at)}</span>
         ${m.read_at ? `<span title="read at ${esc(m.read_at)}">· read</span>` : '<span style="color:var(--warn)">· unread</span>'}
+        ${canMark ? `<button type="button" class="mark-read" data-act="mark-read" data-id="${m.id}">mark read</button>` : ''}
         ${m.end_turn ? '<span style="color:var(--ok)" title="sender set end_turn=true — turn yielded to recipient">· ✓ turn end</span>' : '<span style="color:var(--muted)" title="end_turn was not set on this message — sender may still be composing">· (no end_turn)</span>'}
       </div>
       <div class="md">${m.content_html || `<pre>${esc(m.content)}</pre>`}</div>
@@ -1713,9 +1715,11 @@ document.addEventListener('click', async (e) => {
     return;
   }
   // .closest() so the handler also fires when the click lands on
-  // anything inside the clear button (whitespace, child icon, etc.).
-  if (e.target.closest('#active-session-clear')) {
-    closeSession();
+  // anything inside the back button (whitespace, child icon, etc.).
+  if (e.target.closest('#active-session-back')) {
+    activeSessionTopic = undefined;
+    if (activeTab !== 'sessions') switchTab('sessions');
+    else refresh();
     return;
   }
   const btn = e.target.closest('button[data-act]');
@@ -1734,6 +1738,12 @@ document.addEventListener('click', async (e) => {
     const j = await r.json();
     await api('/api/admin/peers', { method: 'POST', body: JSON.stringify({ id: btn.dataset.id, token: j.token }) });
     refresh();
+  } else if (act === 'mark-read') {
+    const id = parseInt(btn.dataset.id, 10);
+    if (!isNaN(id)) {
+      await api('/api/admin/messages/mark_read', { method: 'POST', body: JSON.stringify({ ids: [id] }) });
+      // SSE messages_read broadcast triggers refresh.
+    }
   } else if (act === 'delete') {
     if (!confirm(`delete peer ${btn.dataset.id}? agents using this token will stop working.`)) return;
     await api('/api/admin/peers/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' });
@@ -1951,8 +1961,22 @@ async def api_messages(request: Request) -> Response:
     if (err := require_admin(request)):
         return err
     after = request.query_params.get("after")
+    topic_q = request.query_params.get("topic")
     with db() as c:
-        if after is not None:
+        if topic_q is not None:
+            # `?topic=__none__` returns messages with no topic; otherwise
+            # exact-match on the value. Returns the FULL thread chronologically;
+            # callers paginate client-side.
+            if topic_q == "__none__":
+                rows = c.execute(
+                    "SELECT * FROM messages WHERE topic IS NULL ORDER BY id ASC"
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM messages WHERE topic = ? ORDER BY id ASC",
+                    (topic_q,),
+                ).fetchall()
+        elif after is not None:
             rows = c.execute(
                 "SELECT * FROM messages WHERE id > ? ORDER BY id ASC", (int(after),)
             ).fetchall()
@@ -1964,6 +1988,57 @@ async def api_messages(request: Request) -> Response:
         d: dict[str, Any] = dict(r)
         d["content_html"] = render_markdown(d.get("content") or "")
         out.append(d)
+    return JSONResponse(out)
+
+
+@mcp.custom_route("/api/sessions", methods=["GET"])
+async def api_sessions(request: Request) -> Response:
+    """One row per topic across the entire history. Used to populate the
+    sessions tab independently of message-list pagination, so old sessions
+    don't disappear just because their recent activity falls outside the
+    most-recent-200 window served by /api/messages."""
+    if (err := require_admin(request)):
+        return err
+    with db() as c:
+        agg = c.execute(
+            """
+            SELECT
+              topic,
+              COUNT(*) AS message_count,
+              SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END) AS unread,
+              MAX(id) AS latest_id,
+              MAX(created_at) AS latest_created_at
+            FROM messages
+            GROUP BY topic
+            ORDER BY latest_id DESC
+            """
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in agg:
+            latest = c.execute(
+                "SELECT from_peer, to_peer, content FROM messages WHERE id = ?",
+                (r["latest_id"],),
+            ).fetchone()
+            participants = c.execute(
+                "SELECT DISTINCT peer FROM ("
+                "  SELECT from_peer AS peer FROM messages WHERE topic IS ?"
+                "  UNION SELECT to_peer AS peer FROM messages WHERE topic IS ?"
+                ")",
+                (r["topic"], r["topic"]),
+            ).fetchall()
+            out.append(
+                {
+                    "topic": r["topic"],
+                    "message_count": r["message_count"],
+                    "unread": r["unread"] or 0,
+                    "latest_id": r["latest_id"],
+                    "latest_created_at": r["latest_created_at"],
+                    "latest_from": latest["from_peer"] if latest else None,
+                    "latest_to": latest["to_peer"] if latest else None,
+                    "latest_content": latest["content"] if latest else "",
+                    "participants": sorted(p["peer"] for p in participants if p["peer"]),
+                }
+            )
     return JSONResponse(out)
 
 
@@ -2082,6 +2157,59 @@ async def api_admin_generate_token(request: Request) -> Response:
     if (err := require_admin(request)):
         return err
     return JSONResponse({"token": secrets.token_hex(32)})
+
+
+@mcp.custom_route("/api/admin/messages/mark_read", methods=["POST"])
+async def api_admin_mark_read(request: Request) -> Response:
+    """Mark messages addressed to ADMIN_PEER_NAME as read. The MCP `read_inbox`
+    tool does this for agent peers; admin doesn't have a peer-token, so this is
+    its equivalent. Body: {ids: [int, ...]} or {all: true} for every unread.
+    Only messages where to_peer matches the admin name are touched."""
+    if (err := require_admin(request)):
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected a json object"}, status_code=400)
+    payload = cast("dict[str, Any]", body)
+    raw_ids = payload.get("ids")
+    mark_all = bool(payload.get("all"))
+    ids: list[int] = []
+    if isinstance(raw_ids, list):
+        for v in cast("list[Any]", raw_ids):
+            if isinstance(v, int) and not isinstance(v, bool):
+                ids.append(v)
+    if not ids and not mark_all:
+        return JSONResponse(
+            {"error": "provide either {ids:[...]} or {all:true}"}, status_code=400
+        )
+    now = now_iso()
+    marked: list[int] = []
+    with db() as c:
+        if mark_all:
+            cur = c.execute(
+                "SELECT id FROM messages WHERE to_peer = ? AND read_at IS NULL",
+                (ADMIN_PEER_NAME,),
+            )
+            marked = [int(r["id"]) for r in cur.fetchall()]
+        else:
+            placeholders = ",".join("?" * len(ids))
+            cur = c.execute(
+                f"SELECT id FROM messages WHERE to_peer = ? AND read_at IS NULL AND id IN ({placeholders})",
+                [ADMIN_PEER_NAME, *ids],
+            )
+            marked = [int(r["id"]) for r in cur.fetchall()]
+        if marked:
+            ph = ",".join("?" * len(marked))
+            c.execute(
+                f"UPDATE messages SET read_at = ? WHERE id IN ({ph})",
+                [now, *marked],
+            )
+    if marked:
+        broadcast_event("messages_read", {"ids": marked})
+    return JSONResponse({"marked": marked})
 
 
 @mcp.custom_route("/api/admin/messages", methods=["POST"])
