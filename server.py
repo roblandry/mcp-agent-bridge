@@ -1125,7 +1125,7 @@ _INDEX_HTML_TEMPLATE = """<!doctype html>
   .pill.proposal, .pill.filereq { color: var(--warn); }
   details summary { cursor: pointer; color: var(--muted); font-size: 0.86rem; user-select: none; }
   details[open] summary { color: var(--fg); }
-  .filter { float: right; color: var(--muted); font-size: 0.86rem; }
+  .filter { color: var(--muted); font-size: 0.86rem; display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .filter select { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; }
 
   /* login */
