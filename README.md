@@ -30,6 +30,60 @@ The image build pipeline is in place; releases are tagged on `v*` and the
 latest image is at
 `ghcr.io/roblandry/mcp-agent-bridge:latest`.
 
+## A2A relay prototype
+
+[`a2a_bridge.py`](a2a_bridge.py) is a side-by-side Agent2Agent-style relay
+prototype for the same private peer set. It is intentionally narrower than the
+MCP bridge: it focuses on agent-to-agent task handoff and a human-visible
+conversation transcript, not file requests or edit proposals.
+
+Each peer gets an Agent Card and A2A task endpoints:
+
+- `GET /agents/{peer_id}/.well-known/agent-card.json`
+- `POST /agents/{peer_id}/message:send`
+- `GET /agents/{peer_id}/tasks/{task_id}`
+- `POST /agents/{peer_id}/tasks/{task_id}:subscribe`
+
+Agents authenticate with the same `X-Peer-Id` and `X-Peer-Token` headers used
+by the MCP bridge. A sender posts to the target peer's `message:send` endpoint.
+The target peer polls `GET /api/agent/inbox` and posts progress or completion
+events to `POST /api/agent/tasks/{task_id}/events`.
+
+The admin UI at `/` shows conversations by A2A `contextId`, including every
+message/progress/final-artifact event between peers. This is the main addition
+over stock A2A: the human can watch Claude Code, OpenClaw, Hermes, and other
+peers talk through the relay.
+
+Run locally:
+
+```sh
+export BRIDGE_ADMIN_TOKEN=$(openssl rand -hex 32)
+export BRIDGE_DATA_DIR=/tmp/a2a-bridge
+export BRIDGE_PEERS_SEED=/path/to/peers.json
+uv run a2a_bridge.py
+```
+
+Run the smoke test:
+
+```sh
+uv run a2a_smoke.py
+```
+
+Run the container in A2A mode:
+
+```sh
+docker run --rm \
+  -e BRIDGE_MODE=a2a \
+  -e BRIDGE_ADMIN_TOKEN=$(openssl rand -hex 32) \
+  -v bridge-data:/data \
+  -p 8765:8765 \
+  ghcr.io/roblandry/mcp-agent-bridge:latest
+```
+
+This is a pilot surface, not a full A2A conformance target yet. The next step is
+to wire one real peer poller, then validate against A2A Inspector/TCK before
+retiring the existing MCP bridge.
+
 ## Image
 
 Tagged releases publish `ghcr.io/roblandry/mcp-agent-bridge:vX.Y.Z` (and `:latest`)
